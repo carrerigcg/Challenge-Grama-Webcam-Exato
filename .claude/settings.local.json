@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -o '\"text\":\"[^\"]\\\\{20,300\\\\}\"' \"/c/Users/jeffe/.claude/projects/C--Users-jeffe-OneDrive--rea-de-Trabalho-Challenge-Grama-Webcam/25d3a531-eebc-4ab7-8027-05a37640317e.jsonl\")"
+    ]
+  }
+}
