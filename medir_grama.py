@@ -260,6 +260,17 @@ def _formatar_cm(valor: float | None) -> str:
     return f"{valor:.1f}".replace(".", ",") + " cm"
 
 
+def _formatar_mediana_com_margem(
+    mediana: float | None, margem: float | None
+) -> str:
+    """Formata mediana + margem. Ex.: '2,8 cm ± 0,4 cm' | '2,8 cm ± —' | '—'."""
+    if mediana is None:
+        return "—"
+    if margem is None:
+        return f"{_formatar_cm(mediana)} ± —"
+    return f"{_formatar_cm(mediana)} ± {_formatar_cm(margem)}"
+
+
 def print_report(
     alturas_cm: list[float | None],
     altura_mediana_cm: float | None,

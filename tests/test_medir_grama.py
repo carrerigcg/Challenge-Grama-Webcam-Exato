@@ -544,3 +544,21 @@ def test_margem_erro_cm_todas_iguais_returns_zero():
 def test_margem_erro_cm_ignora_none_no_calculo():
     # Só 2.0 e 4.0 contam → (4-2)/2 = 1.0
     assert medir_grama.margem_erro_cm([None, 2.0, 4.0, None]) == 1.0
+
+
+# --- _formatar_mediana_com_margem --------------------------------------------
+def test_formatar_mediana_com_margem_mediana_none_returns_placeholder():
+    assert medir_grama._formatar_mediana_com_margem(None, None) == "—"
+    assert medir_grama._formatar_mediana_com_margem(None, 0.4) == "—"
+
+
+def test_formatar_mediana_com_margem_sem_margem_mostra_placeholder():
+    assert medir_grama._formatar_mediana_com_margem(2.8, None) == "2,8 cm ± —"
+
+
+def test_formatar_mediana_com_margem_com_valor():
+    assert medir_grama._formatar_mediana_com_margem(2.8, 0.4) == "2,8 cm ± 0,4 cm"
+
+
+def test_formatar_mediana_com_margem_zero_ainda_imprime_zero():
+    assert medir_grama._formatar_mediana_com_margem(3.0, 0.0) == "3,0 cm ± 0,0 cm"
