@@ -312,6 +312,7 @@ def save_debug(
     top_ys: list[int | None],
     alturas_cm: list[float | None],
     altura_mediana_cm: float | None,
+    margem_cm: float | None,
     col_fractions: tuple[float, ...],
     y_chao: int,
     px_por_cm: float,
@@ -333,23 +334,25 @@ def save_debug(
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
         )
 
-        # Colunas verticais + marca do topo + label de cm
+        # Colunas verticais + marca do topo colorida pela categoria + label
         for frac, y_topo, altura in zip(col_fractions, top_ys, alturas_cm):
             x = int(largura_frame * frac)
             cv2.line(annotated, (x, 0), (x, altura_frame), (0, 255, 255), 1)
             if y_topo is not None:
-                cv2.circle(annotated, (x, y_topo), 5, (0, 255, 0), -1)
+                nivel_col, _ = classify_cm(altura, FAIXA_BAIXA_CM, FAIXA_MEDIA_CM)
+                cor = LEVEL_COLORS_BGR[nivel_col]
+                cv2.circle(annotated, (x, y_topo), 5, cor, -1)
                 label = _formatar_cm(altura)
                 cv2.putText(
                     annotated, label, (x + 8, y_topo - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1,
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, cor, 1,
                 )
 
         # Régua vertical de referência no canto direito (marcas 1 em 1 cm até 10)
         _desenhar_regua(annotated, y_chao, px_por_cm, altura_frame, largura_frame)
 
-        # Texto grande centralizado no topo: "X,X cm — CATEGORIA"
-        titulo = f"{_formatar_cm(altura_mediana_cm)} - {categoria}"
+        # Texto grande centralizado no topo: "X,X cm ± Y,Y cm — CATEGORIA"
+        titulo = f"{_formatar_mediana_com_margem(altura_mediana_cm, margem_cm)} - {categoria}"
         (tw, _), _ = cv2.getTextSize(titulo, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)
         cv2.putText(
             annotated, titulo, ((largura_frame - tw) // 2, 60),
@@ -410,11 +413,12 @@ def main() -> int:
         nivel, categoria, altura_mediana = classify_frame_cm(
             alturas_cm, FAIXA_BAIXA_CM, FAIXA_MEDIA_CM,
         )
-        print_report(alturas_cm, altura_mediana, categoria)
+        margem = margem_erro_cm(alturas_cm)
+        print_report(alturas_cm, altura_mediana, margem, categoria)
         if nivel == 0:
             print("AVISO: nenhuma grama detectada no frame", file=sys.stderr)
         save_debug(
-            frames[-1], mask, top_ys, alturas_cm, altura_mediana,
+            frames[-1], mask, top_ys, alturas_cm, altura_mediana, margem,
             SAMPLE_COLS, y_chao, px_por_cm, categoria, DEBUG_PATH,
         )
         print(f"OK: {DEBUG_PATH} salvo")

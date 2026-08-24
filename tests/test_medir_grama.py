@@ -369,6 +369,7 @@ def test_save_debug_creates_png_file(tmp_path):
         top_ys=[200, 220, 210],
         alturas_cm=[27.5, 25.0, 26.25],
         altura_mediana_cm=26.25,
+        margem_cm=1.25,
         col_fractions=(0.25, 0.5, 0.75),
         y_chao=420,
         px_por_cm=8.0,
@@ -388,6 +389,7 @@ def test_save_debug_creates_parent_directory(tmp_path):
         top_ys=[None, None, None],
         alturas_cm=[None, None, None],
         altura_mediana_cm=None,
+        margem_cm=None,
         col_fractions=(0.25, 0.5, 0.75),
         y_chao=420, px_por_cm=8.0, categoria="AUSENTE",
         path=str(out),
@@ -404,6 +406,7 @@ def test_save_debug_does_not_raise_on_write_failure(tmp_path, capsys, monkeypatc
         top_ys=[400, 400, 400],
         alturas_cm=[2.5, 2.5, 2.5],
         altura_mediana_cm=2.5,
+        margem_cm=0.0,
         col_fractions=(0.25, 0.5, 0.75),
         y_chao=420, px_por_cm=8.0, categoria="BAIXA",
         path=str(tmp_path / "x.png"),
@@ -429,6 +432,7 @@ def test_save_debug_desenha_linha_do_chao_branca(tmp_path, monkeypatch):
         top_ys=[300, 300, 300],
         alturas_cm=[15.0, 15.0, 15.0],
         altura_mediana_cm=15.0,
+        margem_cm=0.0,
         col_fractions=(0.25, 0.5, 0.75),
         y_chao=420, px_por_cm=8.0, categoria="ALTA",
         path=str(tmp_path / "c.png"),
@@ -439,6 +443,62 @@ def test_save_debug_desenha_linha_do_chao_branca(tmp_path, monkeypatch):
         if p1[1] == 420 and p2[1] == 420
     ]
     assert len(horizontais) >= 1
+
+
+def test_save_debug_bolinha_colorida_por_categoria(tmp_path, monkeypatch):
+    """Cada coluna deve ter bolinha desenhada com a cor da sua categoria."""
+    frame = np.zeros((480, 640, 3), np.uint8)
+    mask = np.zeros((480, 640), np.uint8)
+    circles = []
+    original_circle = medir_grama.cv2.circle
+
+    def spy(img, center, radius, color, thickness, *a, **kw):
+        circles.append((center, color))
+        return original_circle(img, center, radius, color, thickness, *a, **kw)
+
+    monkeypatch.setattr(medir_grama.cv2, "circle", spy)
+    # Alturas: 2,5cm (BAIXA), 5,0cm (MÉDIA), 10,0cm (ALTA) com faixas 3/7
+    medir_grama.save_debug(
+        frame, mask,
+        top_ys=[400, 380, 340],
+        alturas_cm=[2.5, 5.0, 10.0],
+        altura_mediana_cm=5.0,
+        margem_cm=3.75,
+        col_fractions=(0.25, 0.5, 0.75),
+        y_chao=420, px_por_cm=8.0, categoria="MÉDIA",
+        path=str(tmp_path / "c.png"),
+    )
+    cores = [color for _, color in circles]
+    assert (0, 255, 0) in cores      # BAIXA — verde
+    assert (0, 255, 255) in cores    # MÉDIA — amarelo
+    assert (0, 0, 255) in cores      # ALTA — vermelho
+
+
+def test_save_debug_titulo_contem_margem(tmp_path, monkeypatch):
+    """O texto grande no topo deve incluir a margem ± cm."""
+    frame = np.zeros((480, 640, 3), np.uint8)
+    mask = np.zeros((480, 640), np.uint8)
+    textos = []
+    original_putText = medir_grama.cv2.putText
+
+    def spy(img, text, org, font, scale, color, thickness, *a, **kw):
+        textos.append(text)
+        return original_putText(img, text, org, font, scale, color, thickness, *a, **kw)
+
+    monkeypatch.setattr(medir_grama.cv2, "putText", spy)
+    medir_grama.save_debug(
+        frame, mask,
+        top_ys=[400, 400, 400],
+        alturas_cm=[2.5, 2.5, 2.5],
+        altura_mediana_cm=2.5,
+        margem_cm=0.3,
+        col_fractions=(0.25, 0.5, 0.75),
+        y_chao=420, px_por_cm=8.0, categoria="BAIXA",
+        path=str(tmp_path / "t.png"),
+    )
+    juntos = " ".join(textos)
+    assert "2,5 cm ± 0,3 cm" in juntos
+    assert "BAIXA" in juntos
 
 
 # --- main --------------------------------------------------------------------
