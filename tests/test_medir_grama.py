@@ -511,3 +511,36 @@ def test_main_reports_altura_em_cm(monkeypatch, tmp_path, capsys):
     # Verde começa em y=240, chão y=420, px/cm=8 → altura = (420-240)/8 = 22.5cm
     assert "22,5 cm" in out
     assert "ALTA" in out
+
+
+# --- margem_erro_cm ----------------------------------------------------------
+def test_margem_erro_cm_lista_vazia_returns_none():
+    assert medir_grama.margem_erro_cm([]) is None
+
+
+def test_margem_erro_cm_uma_valida_returns_none():
+    assert medir_grama.margem_erro_cm([2.0]) is None
+
+
+def test_margem_erro_cm_uma_valida_com_nones_returns_none():
+    assert medir_grama.margem_erro_cm([2.0, None, None]) is None
+
+
+def test_margem_erro_cm_duas_validas_returns_metade_da_amplitude():
+    # (4.0 - 2.0) / 2 = 1.0
+    assert medir_grama.margem_erro_cm([2.0, 4.0]) == 1.0
+
+
+def test_margem_erro_cm_tres_validas_ignora_ordem():
+    # (4.0 - 2.0) / 2 = 1.0, independente da ordem
+    assert medir_grama.margem_erro_cm([2.0, 3.0, 4.0]) == 1.0
+    assert medir_grama.margem_erro_cm([4.0, 2.0, 3.0]) == 1.0
+
+
+def test_margem_erro_cm_todas_iguais_returns_zero():
+    assert medir_grama.margem_erro_cm([3.0, 3.0, 3.0]) == 0.0
+
+
+def test_margem_erro_cm_ignora_none_no_calculo():
+    # Só 2.0 e 4.0 contam → (4-2)/2 = 1.0
+    assert medir_grama.margem_erro_cm([None, 2.0, 4.0, None]) == 1.0

@@ -17,6 +17,13 @@ HSV_LOWER = (35, 40, 40)
 HSV_UPPER = (85, 255, 255)
 SAMPLE_COLS = (0.25, 0.50, 0.75)
 LEVEL_NAMES = ("AUSENTE", "BAIXA", "MÉDIA", "ALTA")
+# Cores BGR (OpenCV) por nível — usado na legenda do preview e nas bolinhas do PNG.
+LEVEL_COLORS_BGR = (
+    (150, 150, 150),  # AUSENTE — cinza
+    (0, 255, 0),      # BAIXA — verde
+    (0, 255, 255),    # MÉDIA — amarelo
+    (0, 0, 255),      # ALTA — vermelho
+)
 # Faixas em cm (limites superiores inclusivos). Ajustar aqui pra recategorizar.
 FAIXA_BAIXA_CM = 3.0     # altura <= FAIXA_BAIXA_CM  → BAIXA
 FAIXA_MEDIA_CM = 7.0     # FAIXA_BAIXA_CM < altura <= FAIXA_MEDIA_CM → MÉDIA
@@ -233,6 +240,17 @@ def measure_top_y(mask: np.ndarray, col_fractions: tuple[float, ...]) -> list[in
         else:
             top_ys.append(int(indices[0]))
     return top_ys
+
+
+def margem_erro_cm(alturas_cm: list[float | None]) -> float | None:
+    """Metade da amplitude (max - min) das alturas válidas em cm.
+
+    None se menos de 2 colunas válidas. 0.0 se todas iguais.
+    """
+    validas = [a for a in alturas_cm if a is not None]
+    if len(validas) < 2:
+        return None
+    return (max(validas) - min(validas)) / 2.0
 
 
 def _formatar_cm(valor: float | None) -> str:
