@@ -585,6 +585,22 @@ def test_main_reports_altura_em_cm(monkeypatch, tmp_path, capsys):
     assert "ALTA" in out
 
 
+def test_main_output_inclui_margem_de_erro(monkeypatch, tmp_path, capsys):
+    """End-to-end: output do main() deve conter '± ... cm' na linha da mediana."""
+    monkeypatch.setattr(medir_grama, "load_calibration", lambda p: _fake_calibration())
+    monkeypatch.setattr(medir_grama, "preview_camera", lambda *a, **kw: True)
+    monkeypatch.setattr(medir_grama, "capture_frames", lambda *a, **kw: _fake_green_frames())
+    monkeypatch.setattr(medir_grama, "countdown", lambda s: None)
+    monkeypatch.setattr(medir_grama, "DEBUG_PATH", str(tmp_path / "out.png"))
+    result = medir_grama.main()
+    assert result == 0
+    out = capsys.readouterr().out
+    # _fake_green_frames tem verde uniforme → 3 colunas com mesma altura →
+    # amplitude = 0 → margem = 0,0 cm
+    assert "±" in out
+    assert "0,0 cm" in out  # margem calculada
+
+
 # --- margem_erro_cm ----------------------------------------------------------
 def test_margem_erro_cm_lista_vazia_returns_none():
     assert medir_grama.margem_erro_cm([]) is None
