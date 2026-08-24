@@ -258,7 +258,7 @@ def test_countdown_zero_seconds_still_prints_snap(capsys, monkeypatch):
 
 # --- print_report ------------------------------------------------------------
 def test_print_report_contains_alturas_mediana_e_categoria(capsys):
-    medir_grama.print_report([5.2, 6.1, 5.5], 5.5, "MÉDIA")
+    medir_grama.print_report([5.2, 6.1, 5.5], 5.5, 0.45, "MÉDIA")
     out = capsys.readouterr().out
     assert "5,2 cm" in out
     assert "6,1 cm" in out
@@ -267,10 +267,22 @@ def test_print_report_contains_alturas_mediana_e_categoria(capsys):
 
 
 def test_print_report_handles_none_alturas(capsys):
-    medir_grama.print_report([None, None, None], None, "AUSENTE")
+    medir_grama.print_report([None, None, None], None, None, "AUSENTE")
     out = capsys.readouterr().out
     assert "AUSENTE" in out
     assert "—" in out  # placeholder pra None
+
+
+def test_print_report_com_margem_imprime_no_output(capsys):
+    medir_grama.print_report([2.5, 3.0, 3.5], 3.0, 0.5, "BAIXA")
+    out = capsys.readouterr().out
+    assert "3,0 cm ± 0,5 cm" in out
+
+
+def test_print_report_sem_margem_imprime_placeholder(capsys):
+    medir_grama.print_report([2.5, None, None], 2.5, None, "BAIXA")
+    out = capsys.readouterr().out
+    assert "2,5 cm ± —" in out
 
 
 # --- capture_frames ----------------------------------------------------------

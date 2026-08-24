@@ -274,11 +274,12 @@ def _formatar_mediana_com_margem(
 def print_report(
     alturas_cm: list[float | None],
     altura_mediana_cm: float | None,
+    margem_cm: float | None,
     categoria: str,
 ) -> None:
     formatadas = [_formatar_cm(a) for a in alturas_cm]
     print(f"Alturas por coluna: {formatadas}")
-    print(f"Altura mediana:     {_formatar_cm(altura_mediana_cm)}")
+    print(f"Altura mediana:     {_formatar_mediana_com_margem(altura_mediana_cm, margem_cm)}")
     print(f"Categoria:          {categoria}")
 
 
