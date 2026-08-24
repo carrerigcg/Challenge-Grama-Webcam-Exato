@@ -140,6 +140,37 @@ def capture_frames(n: int, camera_index: int, backend: int) -> list[np.ndarray]:
         cap.release()
 
 
+def _draw_legenda_niveis(
+    img: np.ndarray,
+    faixa_baixa: float,
+    faixa_media: float,
+    x_inicial: int = 10,
+    y: int = 22,
+) -> None:
+    """Desenha a legenda multicolorida no topo da imagem.
+
+    Cada nível é desenhado na sua cor (LEVEL_COLORS_BGR), separadores em branco.
+    """
+    branco = (255, 255, 255)
+    fonte = cv2.FONT_HERSHEY_SIMPLEX
+    escala = 0.55
+    espessura = 1
+    segmentos = [
+        ("AUSENTE", LEVEL_COLORS_BGR[0]),
+        (" | ", branco),
+        (f"BAIXA (0-{faixa_baixa:g}cm)", LEVEL_COLORS_BGR[1]),
+        (" | ", branco),
+        (f"MEDIA ({faixa_baixa:g}-{faixa_media:g}cm)", LEVEL_COLORS_BGR[2]),
+        (" | ", branco),
+        (f"ALTA (>{faixa_media:g}cm)", LEVEL_COLORS_BGR[3]),
+    ]
+    x = x_inicial
+    for texto, cor in segmentos:
+        cv2.putText(img, texto, (x, y), fonte, escala, cor, espessura)
+        (w, _), _ = cv2.getTextSize(texto, fonte, escala, espessura)
+        x += w
+
+
 def preview_camera(
     camera_index: int,
     backend: int,
@@ -153,11 +184,6 @@ def preview_camera(
     Desenha uma linha branca no `y_chao` (chão calibrado) + colunas verticais
     de amostragem. Legenda no topo mostra as faixas em cm.
     """
-    legenda = (
-        f"BAIXA <= {faixa_baixa:g}cm | "
-        f"MEDIA <= {faixa_media:g}cm | "
-        f"ALTA > {faixa_media:g}cm"
-    )
     cap = cv2.VideoCapture(camera_index, backend)
     try:
         if not cap.isOpened():
@@ -193,10 +219,7 @@ def preview_camera(
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
             )
 
-            cv2.putText(
-                display, legenda, (10, 22),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1,
-            )
+            _draw_legenda_niveis(display, faixa_baixa, faixa_media)
             cv2.putText(
                 display, "SPACE=capturar  ESC=cancelar",
                 (10, altura_frame - 15),

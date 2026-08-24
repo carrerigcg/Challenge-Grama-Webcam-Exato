@@ -574,3 +574,22 @@ def test_formatar_mediana_com_margem_com_valor():
 
 def test_formatar_mediana_com_margem_zero_ainda_imprime_zero():
     assert medir_grama._formatar_mediana_com_margem(3.0, 0.0) == "3,0 cm ± 0,0 cm"
+
+
+# --- _draw_legenda_niveis -------------------------------------------------------
+def test_draw_legenda_niveis_modifica_imagem():
+    """Smoke test: desenhar em preto deve deixar algum pixel != 0."""
+    img = np.zeros((60, 800, 3), np.uint8)
+    medir_grama._draw_legenda_niveis(img, 3.0, 7.0)
+    assert (img > 0).any(), "esperava pixels desenhados na imagem"
+
+
+def test_draw_legenda_niveis_usa_todas_cores_dos_niveis():
+    """Cada uma das 4 cores de nível deve aparecer na imagem."""
+    img = np.zeros((60, 800, 3), np.uint8)
+    medir_grama._draw_legenda_niveis(img, 3.0, 7.0)
+    # Confere que cada cor BGR aparece em pelo menos 1 pixel.
+    for cor in medir_grama.LEVEL_COLORS_BGR:
+        b, g, r = cor
+        match = (img[:, :, 0] == b) & (img[:, :, 1] == g) & (img[:, :, 2] == r)
+        assert match.any(), f"cor {cor} nao aparece na legenda"
