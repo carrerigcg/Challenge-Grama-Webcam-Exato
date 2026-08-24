@@ -1,69 +1,155 @@
 """Testes das funções puras de medir_grama."""
+import json
+
 import numpy as np
 import pytest
 
 import medir_grama
 
 
-# --- classify_column ---------------------------------------------------------
-# Frame de referência: altura 480 → chão y=432, sep1 y=288, sep2 y=168.
-
-def test_classify_column_none_is_ausente():
-    assert medir_grama.classify_column(None, 480, (0.90, 0.60, 0.35)) == 0
-
-
-def test_classify_column_below_sep1_is_baixa():
-    # y_topo=400 está abaixo de sep1(288) → BAIXA
-    assert medir_grama.classify_column(400, 480, (0.90, 0.60, 0.35)) == 1
-
-
-def test_classify_column_exactly_at_sep1_is_media():
-    # borda: y_topo == sep1 → conta como atingiu → MÉDIA
-    assert medir_grama.classify_column(288, 480, (0.90, 0.60, 0.35)) == 2
+# --- load_calibration --------------------------------------------------------
+def _valid_calibration_dict():
+    return {
+        "px_por_cm": 8.5,
+        "y_chao": 420,
+        "resolucao": [640, 480],
+        "created_at": "2026-08-19T14:30:00",
+        "segmento_cm_referencia": 10.0,
+    }
 
 
-def test_classify_column_between_sep1_and_sep2_is_media():
-    assert medir_grama.classify_column(220, 480, (0.90, 0.60, 0.35)) == 2
+def test_load_calibration_valid_file(tmp_path):
+    path = tmp_path / "calibration.json"
+    data = _valid_calibration_dict()
+    path.write_text(json.dumps(data), encoding="utf-8")
+    result = medir_grama.load_calibration(str(path))
+    assert result["px_por_cm"] == 8.5
+    assert result["y_chao"] == 420
 
 
-def test_classify_column_exactly_at_sep2_is_alta():
-    assert medir_grama.classify_column(168, 480, (0.90, 0.60, 0.35)) == 3
+def test_load_calibration_missing_file_raises_with_hint(tmp_path):
+    path = tmp_path / "nao_existe.json"
+    with pytest.raises(FileNotFoundError, match="calibrar"):
+        medir_grama.load_calibration(str(path))
 
 
-def test_classify_column_above_sep2_is_alta():
-    assert medir_grama.classify_column(50, 480, (0.90, 0.60, 0.35)) == 3
+def test_load_calibration_invalid_json_raises(tmp_path):
+    path = tmp_path / "calibration.json"
+    path.write_text("{ isso nao eh json valido", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="JSON"):
+        medir_grama.load_calibration(str(path))
 
 
-def test_classify_column_at_top_is_alta():
-    assert medir_grama.classify_column(0, 480, (0.90, 0.60, 0.35)) == 3
+def test_load_calibration_missing_field_raises(tmp_path):
+    path = tmp_path / "calibration.json"
+    data = _valid_calibration_dict()
+    del data["px_por_cm"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="px_por_cm"):
+        medir_grama.load_calibration(str(path))
 
 
-# --- classify_frame ----------------------------------------------------------
-def test_classify_frame_all_baixa_returns_baixa():
-    result = medir_grama.classify_frame([400, 400, 400], 480, (0.90, 0.60, 0.35))
-    assert result == (1, "BAIXA")
+def test_load_calibration_invalid_px_por_cm_raises(tmp_path):
+    path = tmp_path / "calibration.json"
+    data = _valid_calibration_dict()
+    data["px_por_cm"] = 0
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="px_por_cm"):
+        medir_grama.load_calibration(str(path))
 
 
-def test_classify_frame_mediana_between_niveis():
-    # (1, 2, 3) → mediana = 2 → MÉDIA
-    result = medir_grama.classify_frame([400, 220, 50], 480, (0.90, 0.60, 0.35))
-    assert result == (2, "MÉDIA")
+# --- y_para_altura_cm --------------------------------------------------------
+def test_y_para_altura_cm_normal():
+    # y_topo=340, y_chao=420, px_por_cm=8 → (420-340)/8 = 10.0 cm
+    assert medir_grama.y_para_altura_cm(340, 420, 8.0) == 10.0
 
 
-def test_classify_frame_all_ausente_returns_ausente():
-    result = medir_grama.classify_frame([None, None, None], 480, (0.90, 0.60, 0.35))
-    assert result == (0, "AUSENTE")
+def test_y_para_altura_cm_none_returns_none():
+    assert medir_grama.y_para_altura_cm(None, 420, 8.0) is None
 
 
-def test_classify_frame_mixed_ausente_and_baixa():
-    # (0, 0, 1) → mediana = 0 → AUSENTE
-    result = medir_grama.classify_frame([None, None, 400], 480, (0.90, 0.60, 0.35))
-    assert result == (0, "AUSENTE")
+def test_y_para_altura_cm_topo_no_chao_returns_zero():
+    # y_topo == y_chao → altura = 0
+    assert medir_grama.y_para_altura_cm(420, 420, 8.0) == 0.0
 
 
-def test_classify_frame_all_alta_returns_alta():
-    result = medir_grama.classify_frame([50, 100, 150], 480, (0.90, 0.60, 0.35))
-    assert result == (3, "ALTA")
+def test_y_para_altura_cm_topo_abaixo_do_chao_returns_zero():
+    # y_topo > y_chao (grama detectada abaixo do chão calibrado — ignora)
+    assert medir_grama.y_para_altura_cm(450, 420, 8.0) == 0.0
+
+
+def test_y_para_altura_cm_float_precision():
+    # (400-350)/8.5 = ~5.882 cm
+    result = medir_grama.y_para_altura_cm(350, 400, 8.5)
+    assert abs(result - (50 / 8.5)) < 1e-9
+
+
+# --- classify_cm -------------------------------------------------------------
+def test_classify_cm_none_is_ausente():
+    assert medir_grama.classify_cm(None, 3.0, 7.0) == (0, "AUSENTE")
+
+
+def test_classify_cm_below_baixa_is_baixa():
+    assert medir_grama.classify_cm(2.9, 3.0, 7.0) == (1, "BAIXA")
+
+
+def test_classify_cm_zero_is_baixa():
+    assert medir_grama.classify_cm(0.0, 3.0, 7.0) == (1, "BAIXA")
+
+
+def test_classify_cm_exactly_at_baixa_boundary_is_baixa():
+    # <= faixa_baixa → BAIXA
+    assert medir_grama.classify_cm(3.0, 3.0, 7.0) == (1, "BAIXA")
+
+
+def test_classify_cm_between_boundaries_is_media():
+    assert medir_grama.classify_cm(5.0, 3.0, 7.0) == (2, "MÉDIA")
+
+
+def test_classify_cm_exactly_at_media_boundary_is_media():
+    assert medir_grama.classify_cm(7.0, 3.0, 7.0) == (2, "MÉDIA")
+
+
+def test_classify_cm_above_media_is_alta():
+    assert medir_grama.classify_cm(7.1, 3.0, 7.0) == (3, "ALTA")
+
+
+def test_classify_cm_very_tall_is_alta():
+    assert medir_grama.classify_cm(50.0, 3.0, 7.0) == (3, "ALTA")
+
+
+# --- classify_frame_cm -------------------------------------------------------
+def test_classify_frame_cm_all_none_is_ausente():
+    result = medir_grama.classify_frame_cm([None, None, None], 3.0, 7.0)
+    assert result == (0, "AUSENTE", None)
+
+
+def test_classify_frame_cm_all_baixa():
+    result = medir_grama.classify_frame_cm([2.0, 2.5, 2.8], 3.0, 7.0)
+    assert result[0] == 1
+    assert result[1] == "BAIXA"
+    assert abs(result[2] - 2.5) < 1e-9  # mediana
+
+
+def test_classify_frame_cm_ignores_none_in_median():
+    # [None, 5.0, 6.0] → mediana ignora None → mediana([5.0, 6.0]) = 5.5 → MÉDIA
+    result = medir_grama.classify_frame_cm([None, 5.0, 6.0], 3.0, 7.0)
+    assert result[0] == 2
+    assert result[1] == "MÉDIA"
+    assert abs(result[2] - 5.5) < 1e-9
+
+
+def test_classify_frame_cm_mix_baixa_media_alta():
+    # [2.0, 5.0, 9.0] → mediana=5.0 → MÉDIA
+    result = medir_grama.classify_frame_cm([2.0, 5.0, 9.0], 3.0, 7.0)
+    assert result[0] == 2
+    assert result[1] == "MÉDIA"
+
+
+def test_classify_frame_cm_all_alta():
+    result = medir_grama.classify_frame_cm([8.0, 9.0, 10.0], 3.0, 7.0)
+    assert result[0] == 3
+    assert result[1] == "ALTA"
 
 
 # --- measure_top_y -----------------------------------------------------------
@@ -171,22 +257,20 @@ def test_countdown_zero_seconds_still_prints_snap(capsys, monkeypatch):
 
 
 # --- print_report ------------------------------------------------------------
-def test_print_report_contains_top_ys_niveis_and_categoria(capsys):
-    medir_grama.print_report([300, 220, 180], [1, 2, 2], "MÉDIA")
+def test_print_report_contains_alturas_mediana_e_categoria(capsys):
+    medir_grama.print_report([5.2, 6.1, 5.5], 5.5, "MÉDIA")
     out = capsys.readouterr().out
-    assert "300" in out
-    assert "220" in out
-    assert "180" in out
+    assert "5,2 cm" in out
+    assert "6,1 cm" in out
+    assert "5,5 cm" in out
     assert "MÉDIA" in out
-    assert "níveis" in out
-    assert "[1, 2, 2]" in out
 
 
-def test_print_report_handles_none_top_ys(capsys):
-    medir_grama.print_report([None, None, None], [0, 0, 0], "AUSENTE")
+def test_print_report_handles_none_alturas(capsys):
+    medir_grama.print_report([None, None, None], None, "AUSENTE")
     out = capsys.readouterr().out
     assert "AUSENTE" in out
-    assert "None" in out
+    assert "—" in out  # placeholder pra None
 
 
 # --- capture_frames ----------------------------------------------------------
@@ -269,8 +353,15 @@ def test_save_debug_creates_png_file(tmp_path):
     mask = np.zeros((480, 640), np.uint8)
     out = tmp_path / "out.png"
     medir_grama.save_debug(
-        frame, mask, [200, 220, 210], (0.25, 0.5, 0.75),
-        (0.90, 0.60, 0.35), 2, "MÉDIA", str(out),
+        frame, mask,
+        top_ys=[200, 220, 210],
+        alturas_cm=[27.5, 25.0, 26.25],
+        altura_mediana_cm=26.25,
+        col_fractions=(0.25, 0.5, 0.75),
+        y_chao=420,
+        px_por_cm=8.0,
+        categoria="ALTA",
+        path=str(out),
     )
     assert out.exists()
     assert out.stat().st_size > 0
@@ -281,8 +372,13 @@ def test_save_debug_creates_parent_directory(tmp_path):
     mask = np.zeros((480, 640), np.uint8)
     out = tmp_path / "sub" / "dir" / "out.png"
     medir_grama.save_debug(
-        frame, mask, [None, None, None], (0.25, 0.5, 0.75),
-        (0.90, 0.60, 0.35), 0, "AUSENTE", str(out),
+        frame, mask,
+        top_ys=[None, None, None],
+        alturas_cm=[None, None, None],
+        altura_mediana_cm=None,
+        col_fractions=(0.25, 0.5, 0.75),
+        y_chao=420, px_por_cm=8.0, categoria="AUSENTE",
+        path=str(out),
     )
     assert out.exists()
 
@@ -292,74 +388,45 @@ def test_save_debug_does_not_raise_on_write_failure(tmp_path, capsys, monkeypatc
     mask = np.zeros((480, 640), np.uint8)
     monkeypatch.setattr(medir_grama.cv2, "imwrite", lambda *a, **kw: False)
     medir_grama.save_debug(
-        frame, mask, [400, 400, 400], (0.25, 0.5, 0.75),
-        (0.90, 0.60, 0.35), 1, "BAIXA", str(tmp_path / "x.png"),
+        frame, mask,
+        top_ys=[400, 400, 400],
+        alturas_cm=[2.5, 2.5, 2.5],
+        altura_mediana_cm=2.5,
+        col_fractions=(0.25, 0.5, 0.75),
+        y_chao=420, px_por_cm=8.0, categoria="BAIXA",
+        path=str(tmp_path / "x.png"),
     )
     assert "AVISO" in capsys.readouterr().err
 
 
-def test_save_debug_draws_green_highlight_for_media(tmp_path, monkeypatch):
-    """Quando nivel_final == 2 (MÉDIA), destaca sep1 em verde grosso."""
+def test_save_debug_desenha_linha_do_chao_branca(tmp_path, monkeypatch):
+    """Confirma que a linha branca do chão é desenhada no y_chao correto."""
     frame = np.zeros((480, 640, 3), np.uint8)
     mask = np.zeros((480, 640), np.uint8)
-    linhas_grossas_verdes = []
+    linhas_brancas_grossas = []
     original_line = medir_grama.cv2.line
 
     def spy(img, pt1, pt2, color, thickness=1, *a, **kw):
-        if color == (0, 255, 0) and thickness == 3:
-            linhas_grossas_verdes.append((pt1, pt2))
+        if color == (255, 255, 255) and thickness == 2:
+            linhas_brancas_grossas.append((pt1, pt2))
         return original_line(img, pt1, pt2, color, thickness, *a, **kw)
 
     monkeypatch.setattr(medir_grama.cv2, "line", spy)
     medir_grama.save_debug(
-        frame, mask, [220, 220, 220], (0.25, 0.5, 0.75),
-        (0.90, 0.60, 0.35), 2, "MÉDIA", str(tmp_path / "m.png"),
+        frame, mask,
+        top_ys=[300, 300, 300],
+        alturas_cm=[15.0, 15.0, 15.0],
+        altura_mediana_cm=15.0,
+        col_fractions=(0.25, 0.5, 0.75),
+        y_chao=420, px_por_cm=8.0, categoria="ALTA",
+        path=str(tmp_path / "c.png"),
     )
-    assert len(linhas_grossas_verdes) == 1
-
-
-def test_save_debug_draws_green_highlight_for_alta(tmp_path, monkeypatch):
-    """Quando nivel_final == 3 (ALTA), destaca sep2 em verde grosso."""
-    frame = np.zeros((480, 640, 3), np.uint8)
-    mask = np.zeros((480, 640), np.uint8)
-    linhas_grossas_verdes = []
-    original_line = medir_grama.cv2.line
-
-    def spy(img, pt1, pt2, color, thickness=1, *a, **kw):
-        if color == (0, 255, 0) and thickness == 3:
-            linhas_grossas_verdes.append((pt1, pt2))
-        return original_line(img, pt1, pt2, color, thickness, *a, **kw)
-
-    monkeypatch.setattr(medir_grama.cv2, "line", spy)
-    medir_grama.save_debug(
-        frame, mask, [50, 50, 50], (0.25, 0.5, 0.75),
-        (0.90, 0.60, 0.35), 3, "ALTA", str(tmp_path / "a.png"),
-    )
-    assert len(linhas_grossas_verdes) == 1
-
-
-def test_save_debug_no_green_highlight_for_baixa_or_ausente(tmp_path, monkeypatch):
-    """Quando nivel_final < 2 (BAIXA ou AUSENTE), não desenha o destaque verde."""
-    frame = np.zeros((480, 640, 3), np.uint8)
-    mask = np.zeros((480, 640), np.uint8)
-    linhas_grossas_verdes = []
-    original_line = medir_grama.cv2.line
-
-    def spy(img, pt1, pt2, color, thickness=1, *a, **kw):
-        if color == (0, 255, 0) and thickness == 3:
-            linhas_grossas_verdes.append((pt1, pt2))
-        return original_line(img, pt1, pt2, color, thickness, *a, **kw)
-
-    monkeypatch.setattr(medir_grama.cv2, "line", spy)
-    medir_grama.save_debug(
-        frame, mask, [400, 400, 400], (0.25, 0.5, 0.75),
-        (0.90, 0.60, 0.35), 1, "BAIXA", str(tmp_path / "b.png"),
-    )
-    medir_grama.save_debug(
-        frame, mask, [None, None, None], (0.25, 0.5, 0.75),
-        (0.90, 0.60, 0.35), 0, "AUSENTE", str(tmp_path / "au.png"),
-    )
-    assert linhas_grossas_verdes == []
+    # Deve ter desenhado ao menos uma linha branca grossa na horizontal em y=420
+    horizontais = [
+        (p1, p2) for p1, p2 in linhas_brancas_grossas
+        if p1[1] == 420 and p2[1] == 420
+    ]
+    assert len(horizontais) >= 1
 
 
 # --- main --------------------------------------------------------------------
@@ -370,7 +437,12 @@ def _fake_green_frames(n=5):
     return [frame.copy() for _ in range(n)]
 
 
+def _fake_calibration():
+    return {"px_por_cm": 8.0, "y_chao": 420, "resolucao": [640, 480]}
+
+
 def test_main_success_returns_zero(monkeypatch, tmp_path):
+    monkeypatch.setattr(medir_grama, "load_calibration", lambda p: _fake_calibration())
     monkeypatch.setattr(medir_grama, "preview_camera", lambda *a, **kw: True)
     monkeypatch.setattr(medir_grama, "capture_frames", lambda *a, **kw: _fake_green_frames())
     monkeypatch.setattr(medir_grama, "countdown", lambda s: None)
@@ -380,9 +452,21 @@ def test_main_success_returns_zero(monkeypatch, tmp_path):
     assert (tmp_path / "out.png").exists()
 
 
+def test_main_missing_calibration_returns_one(monkeypatch, capsys):
+    def raise_fnf(p):
+        raise FileNotFoundError("calibration.json não encontrado. Rode: python calibrar.py")
+    monkeypatch.setattr(medir_grama, "load_calibration", raise_fnf)
+    result = medir_grama.main()
+    assert result == 1
+    err = capsys.readouterr().err
+    assert "ERRO" in err
+    assert "calibrar" in err
+
+
 def test_main_camera_failure_returns_one(monkeypatch, capsys):
     def raise_runtime(*a, **kw):
         raise RuntimeError("webcam nao acessivel")
+    monkeypatch.setattr(medir_grama, "load_calibration", lambda p: _fake_calibration())
     monkeypatch.setattr(medir_grama, "preview_camera", lambda *a, **kw: True)
     monkeypatch.setattr(medir_grama, "countdown", lambda s: None)
     monkeypatch.setattr(medir_grama, "capture_frames", raise_runtime)
@@ -394,6 +478,7 @@ def test_main_camera_failure_returns_one(monkeypatch, capsys):
 def test_main_keyboard_interrupt_returns_130(monkeypatch, capsys):
     def raise_kbint(*a, **kw):
         raise KeyboardInterrupt
+    monkeypatch.setattr(medir_grama, "load_calibration", lambda p: _fake_calibration())
     monkeypatch.setattr(medir_grama, "preview_camera", lambda *a, **kw: True)
     monkeypatch.setattr(medir_grama, "countdown", raise_kbint)
     result = medir_grama.main()
@@ -403,6 +488,7 @@ def test_main_keyboard_interrupt_returns_130(monkeypatch, capsys):
 
 def test_main_no_green_detected_still_returns_zero_with_warning(monkeypatch, tmp_path, capsys):
     empty_frames = [np.zeros((480, 640, 3), np.uint8) for _ in range(5)]
+    monkeypatch.setattr(medir_grama, "load_calibration", lambda p: _fake_calibration())
     monkeypatch.setattr(medir_grama, "preview_camera", lambda *a, **kw: True)
     monkeypatch.setattr(medir_grama, "capture_frames", lambda *a, **kw: empty_frames)
     monkeypatch.setattr(medir_grama, "countdown", lambda s: None)
@@ -410,3 +496,18 @@ def test_main_no_green_detected_still_returns_zero_with_warning(monkeypatch, tmp
     result = medir_grama.main()
     assert result == 0
     assert "nenhuma grama" in capsys.readouterr().err.lower()
+
+
+def test_main_reports_altura_em_cm(monkeypatch, tmp_path, capsys):
+    """End-to-end: frames com verde na parte inferior → output com valor em cm."""
+    monkeypatch.setattr(medir_grama, "load_calibration", lambda p: _fake_calibration())
+    monkeypatch.setattr(medir_grama, "preview_camera", lambda *a, **kw: True)
+    monkeypatch.setattr(medir_grama, "capture_frames", lambda *a, **kw: _fake_green_frames())
+    monkeypatch.setattr(medir_grama, "countdown", lambda s: None)
+    monkeypatch.setattr(medir_grama, "DEBUG_PATH", str(tmp_path / "out.png"))
+    result = medir_grama.main()
+    assert result == 0
+    out = capsys.readouterr().out
+    # Verde começa em y=240, chão y=420, px/cm=8 → altura = (420-240)/8 = 22.5cm
+    assert "22,5 cm" in out
+    assert "ALTA" in out
