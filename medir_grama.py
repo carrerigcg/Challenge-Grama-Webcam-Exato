@@ -8,6 +8,10 @@ import time
 
 import cv2
 import numpy as np
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- Configurações -----------------------------------------------------------
 CAMERA_INDEX = 0
@@ -31,6 +35,9 @@ FAIXA_MEDIA_CM = 7.0     # FAIXA_BAIXA_CM < altura <= FAIXA_MEDIA_CM → MÉDIA
 CALIBRATION_PATH = "calibration.json"
 DEBUG_PATH = "debug/ultima_medicao.png"
 COUNTDOWN_SECONDS = 3
+
+API_URL = os.environ.get("API_URL", "http://localhost:8000")
+API_KEY = os.environ.get("API_KEY")
 
 
 # --- Funções -----------------------------------------------------------------
@@ -393,6 +400,34 @@ def _desenhar_regua(
              (255, 255, 255), 1)
 
 
+def enviar_medicao(altura_cm: float | None, categoria: str) -> None:
+    """POST da medição pra API. Falhas viram avisos, nunca crasham o script."""
+    if not API_KEY:
+        print("AVISO: API_KEY não configurada, medição não enviada", file=sys.stderr)
+        return
+    payload = {
+        "altura_cm": altura_cm if altura_cm is not None else 0.0,
+        "nivel_risco": categoria.replace("MÉDIA", "MEDIA"),
+    }
+    try:
+        r = requests.post(
+            f"{API_URL}/medicoes",
+            json=payload,
+            headers={"X-API-Key": API_KEY},
+            timeout=10,
+        )
+        r.raise_for_status()
+        dados = r.json()
+        print(f"OK: medição enviada (id={dados['id']}, clima={dados['clima']})")
+    except requests.HTTPError as e:
+        print(
+            f"AVISO: API rejeitou (HTTP {e.response.status_code}): {e.response.text}",
+            file=sys.stderr,
+        )
+    except requests.RequestException as e:
+        print(f"AVISO: falha ao enviar medição: {e}", file=sys.stderr)
+
+
 def main() -> int:
     try:
         calibration = load_calibration(CALIBRATION_PATH)
@@ -422,6 +457,7 @@ def main() -> int:
             SAMPLE_COLS, y_chao, px_por_cm, categoria, DEBUG_PATH,
         )
         print(f"OK: {DEBUG_PATH} salvo")
+        enviar_medicao(altura_mediana, categoria)
         return 0
     except KeyboardInterrupt:
         print("Cancelado.")

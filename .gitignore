@@ -7,6 +7,10 @@ __pycache__/
 debug/
 calibration.json
 
+# API
+.env
+*.db
+
 # Ferramentas
 .superpowers/
 
