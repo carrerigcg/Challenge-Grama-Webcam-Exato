@@ -669,3 +669,84 @@ def test_draw_legenda_niveis_usa_todas_cores_dos_niveis():
         b, g, r = cor
         match = (img[:, :, 0] == b) & (img[:, :, 1] == g) & (img[:, :, 2] == r)
         assert match.any(), f"cor {cor} nao aparece na legenda"
+
+
+# --- enviar_medicao ----------------------------------------------------------
+class _RespostaFake:
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"id": 1, "clima": "Nublado"}
+
+
+def test_enviar_medicao_inclui_regiao_do_env(monkeypatch):
+    """Cada estação se identifica, senão medições de locais diferentes colidem."""
+    enviados = {}
+
+    def _fake_post(url, json, headers, timeout):
+        enviados.update(json)
+        return _RespostaFake()
+
+    monkeypatch.setattr(medir_grama.requests, "post", _fake_post)
+    monkeypatch.setattr(medir_grama, "API_KEY_WRITE", "chave")
+    monkeypatch.setattr(medir_grama, "REGIAO", "rodoanel norte")
+
+    medir_grama.enviar_medicao(5.2, "MÉDIA")
+
+    assert enviados["regiao"] == "rodoanel norte"
+    assert enviados["altura_cm"] == 5.2
+    assert enviados["nivel_risco"] == "MEDIA"
+
+
+def test_enviar_medicao_sem_regiao_avisa_e_nao_envia(monkeypatch, capsys):
+    chamou = False
+
+    def _fake_post(*a, **k):
+        nonlocal chamou
+        chamou = True
+        return _RespostaFake()
+
+    monkeypatch.setattr(medir_grama.requests, "post", _fake_post)
+    monkeypatch.setattr(medir_grama, "API_KEY_WRITE", "chave")
+    monkeypatch.setattr(medir_grama, "REGIAO", None)
+
+    medir_grama.enviar_medicao(5.2, "MÉDIA")
+
+    assert chamou is False
+    assert "REGIAO" in capsys.readouterr().err
+
+
+def test_enviar_medicao_usa_chave_de_escrita_no_header(monkeypatch):
+    """A estação escreve, então carrega API_KEY_WRITE — nunca a de leitura."""
+    capturado = {}
+
+    def _fake_post(url, json, headers, timeout):
+        capturado.update(headers)
+        return _RespostaFake()
+
+    monkeypatch.setattr(medir_grama.requests, "post", _fake_post)
+    monkeypatch.setattr(medir_grama, "API_KEY_WRITE", "chave-de-escrita")
+    monkeypatch.setattr(medir_grama, "REGIAO", "oeste")
+
+    medir_grama.enviar_medicao(5.2, "MÉDIA")
+
+    assert capturado["X-API-Key"] == "chave-de-escrita"
+
+
+def test_enviar_medicao_com_altura_none_envia_zero(monkeypatch):
+    """AUSENTE não tem mediana; manda 0.0 pra API não rejeitar."""
+    enviados = {}
+
+    def _fake_post(url, json, headers, timeout):
+        enviados.update(json)
+        return _RespostaFake()
+
+    monkeypatch.setattr(medir_grama.requests, "post", _fake_post)
+    monkeypatch.setattr(medir_grama, "API_KEY_WRITE", "chave")
+    monkeypatch.setattr(medir_grama, "REGIAO", "leste")
+
+    medir_grama.enviar_medicao(None, "AUSENTE")
+
+    assert enviados["altura_cm"] == 0.0
+    assert enviados["nivel_risco"] == "AUSENTE"

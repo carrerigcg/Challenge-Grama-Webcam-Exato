@@ -37,7 +37,8 @@ DEBUG_PATH = "debug/ultima_medicao.png"
 COUNTDOWN_SECONDS = 3
 
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
-API_KEY = os.environ.get("API_KEY")
+API_KEY_WRITE = os.environ.get("API_KEY_WRITE")  # chave de escrita da estação
+REGIAO = os.environ.get("REGIAO")  # identifica esta estação de captura
 
 
 # --- Funções -----------------------------------------------------------------
@@ -402,10 +403,20 @@ def _desenhar_regua(
 
 def enviar_medicao(altura_cm: float | None, categoria: str) -> None:
     """POST da medição pra API. Falhas viram avisos, nunca crasham o script."""
-    if not API_KEY:
-        print("AVISO: API_KEY não configurada, medição não enviada", file=sys.stderr)
+    if not API_KEY_WRITE:
+        print(
+            "AVISO: API_KEY_WRITE não configurada, medição não enviada",
+            file=sys.stderr,
+        )
+        return
+    if not REGIAO:
+        print(
+            "AVISO: REGIAO não configurada no .env, medição não enviada",
+            file=sys.stderr,
+        )
         return
     payload = {
+        "regiao": REGIAO,
         "altura_cm": altura_cm if altura_cm is not None else 0.0,
         "nivel_risco": categoria.replace("MÉDIA", "MEDIA"),
     }
@@ -413,7 +424,7 @@ def enviar_medicao(altura_cm: float | None, categoria: str) -> None:
         r = requests.post(
             f"{API_URL}/medicoes",
             json=payload,
-            headers={"X-API-Key": API_KEY},
+            headers={"X-API-Key": API_KEY_WRITE},
             timeout=10,
         )
         r.raise_for_status()
