@@ -14,6 +14,10 @@ backups/
 
 # Ferramentas
 .superpowers/
+# Skills do Neon — instaladas localmente, não fazem parte do projeto
+.agents/
+.claude/skills/
+skills-lock.json
 
 # IDE / OS
 .vscode/
