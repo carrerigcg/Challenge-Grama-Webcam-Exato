@@ -10,6 +10,10 @@ services:
     startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /
     envVars:
+      # Fixa a versão: o código usa sintaxe `X | None` que o Pydantic resolve
+      # em runtime e exige 3.10+. Sem pinar, um default antigo quebra o boot.
+      - key: PYTHON_VERSION
+        value: "3.11.9"
       # sync: false faz o Render pedir o valor no dashboard, em vez de
       # versionar segredo no Git.
       - key: DATABASE_URL
