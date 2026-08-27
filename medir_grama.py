@@ -1,6 +1,7 @@
 """Script one-shot pra medir altura de grama via webcam."""
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -462,18 +463,35 @@ def enviar_medicao(altura_cm: float | None, categoria: str) -> None:
             )
 
 
-def main() -> int:
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Mede altura de grama via webcam e envia pra API."
+    )
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help=(
+            "Modo desatendido: pula preview e countdown. Use nas estações sem "
+            "monitor (Raspberry Pi via cron), onde esperar tecla travaria."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
     try:
         calibration = load_calibration(CALIBRATION_PATH)
         y_chao = calibration["y_chao"]
         px_por_cm = float(calibration["px_por_cm"])
-        if not preview_camera(
-            CAMERA_INDEX, CAMERA_BACKEND, SAMPLE_COLS,
-            y_chao, FAIXA_BAIXA_CM, FAIXA_MEDIA_CM,
-        ):
-            print("Cancelado.")
-            return 130
-        countdown(COUNTDOWN_SECONDS)
+        if not args.auto:
+            if not preview_camera(
+                CAMERA_INDEX, CAMERA_BACKEND, SAMPLE_COLS,
+                y_chao, FAIXA_BAIXA_CM, FAIXA_MEDIA_CM,
+            ):
+                print("Cancelado.")
+                return 130
+            countdown(COUNTDOWN_SECONDS)
         frames = capture_frames(FRAME_COUNT, CAMERA_INDEX, CAMERA_BACKEND)
         masks = [apply_mask(f) for f in frames]
         mask = median_stack(masks)

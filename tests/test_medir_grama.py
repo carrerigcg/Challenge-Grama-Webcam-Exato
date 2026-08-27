@@ -519,16 +519,82 @@ def test_main_success_returns_zero(monkeypatch, tmp_path):
     monkeypatch.setattr(medir_grama, "capture_frames", lambda *a, **kw: _fake_green_frames())
     monkeypatch.setattr(medir_grama, "countdown", lambda s: None)
     monkeypatch.setattr(medir_grama, "DEBUG_PATH", str(tmp_path / "out.png"))
-    result = medir_grama.main()
+    result = medir_grama.main([])
     assert result == 0
     assert (tmp_path / "out.png").exists()
+
+
+def _explode(*a, **kw):
+    raise AssertionError("não deveria ter sido chamado no modo --auto")
+
+
+def test_main_auto_pula_preview(monkeypatch, tmp_path):
+    """Pi sem monitor: preview travaria esperando tecla que nunca vem."""
+    monkeypatch.setattr(medir_grama, "load_calibration", lambda p: _fake_calibration())
+    monkeypatch.setattr(medir_grama, "preview_camera", _explode)
+    monkeypatch.setattr(medir_grama, "countdown", lambda s: None)
+    monkeypatch.setattr(
+        medir_grama, "capture_frames", lambda *a, **kw: _fake_green_frames()
+    )
+    monkeypatch.setattr(medir_grama, "DEBUG_PATH", str(tmp_path / "out.png"))
+
+    assert medir_grama.main(["--auto"]) == 0
+
+
+def test_main_auto_pula_countdown(monkeypatch, tmp_path):
+    """Countdown só faz sentido com humano presente."""
+    monkeypatch.setattr(medir_grama, "load_calibration", lambda p: _fake_calibration())
+    monkeypatch.setattr(medir_grama, "preview_camera", lambda *a, **kw: True)
+    monkeypatch.setattr(medir_grama, "countdown", _explode)
+    monkeypatch.setattr(
+        medir_grama, "capture_frames", lambda *a, **kw: _fake_green_frames()
+    )
+    monkeypatch.setattr(medir_grama, "DEBUG_PATH", str(tmp_path / "out.png"))
+
+    assert medir_grama.main(["--auto"]) == 0
+
+
+def test_main_auto_ainda_envia_a_medicao(monkeypatch, tmp_path):
+    enviadas = []
+    monkeypatch.setattr(medir_grama, "load_calibration", lambda p: _fake_calibration())
+    monkeypatch.setattr(medir_grama, "preview_camera", _explode)
+    monkeypatch.setattr(medir_grama, "countdown", _explode)
+    monkeypatch.setattr(
+        medir_grama, "capture_frames", lambda *a, **kw: _fake_green_frames()
+    )
+    monkeypatch.setattr(medir_grama, "DEBUG_PATH", str(tmp_path / "out.png"))
+    monkeypatch.setattr(
+        medir_grama, "enviar_medicao", lambda a, c: enviadas.append((a, c))
+    )
+
+    medir_grama.main(["--auto"])
+
+    assert len(enviadas) == 1
+
+
+def test_main_sem_auto_continua_mostrando_preview(monkeypatch, tmp_path):
+    """As 10 estações Windows seguem com preview — o padrão não muda."""
+    chamou = []
+    monkeypatch.setattr(medir_grama, "load_calibration", lambda p: _fake_calibration())
+    monkeypatch.setattr(
+        medir_grama, "preview_camera", lambda *a, **kw: chamou.append(1) or True
+    )
+    monkeypatch.setattr(medir_grama, "countdown", lambda s: None)
+    monkeypatch.setattr(
+        medir_grama, "capture_frames", lambda *a, **kw: _fake_green_frames()
+    )
+    monkeypatch.setattr(medir_grama, "DEBUG_PATH", str(tmp_path / "out.png"))
+
+    medir_grama.main([])
+
+    assert chamou == [1]
 
 
 def test_main_missing_calibration_returns_one(monkeypatch, capsys):
     def raise_fnf(p):
         raise FileNotFoundError("calibration.json não encontrado. Rode: python calibrar.py")
     monkeypatch.setattr(medir_grama, "load_calibration", raise_fnf)
-    result = medir_grama.main()
+    result = medir_grama.main([])
     assert result == 1
     err = capsys.readouterr().err
     assert "ERRO" in err
@@ -542,7 +608,7 @@ def test_main_camera_failure_returns_one(monkeypatch, capsys):
     monkeypatch.setattr(medir_grama, "preview_camera", lambda *a, **kw: True)
     monkeypatch.setattr(medir_grama, "countdown", lambda s: None)
     monkeypatch.setattr(medir_grama, "capture_frames", raise_runtime)
-    result = medir_grama.main()
+    result = medir_grama.main([])
     assert result == 1
     assert "ERRO" in capsys.readouterr().err
 
@@ -553,7 +619,7 @@ def test_main_keyboard_interrupt_returns_130(monkeypatch, capsys):
     monkeypatch.setattr(medir_grama, "load_calibration", lambda p: _fake_calibration())
     monkeypatch.setattr(medir_grama, "preview_camera", lambda *a, **kw: True)
     monkeypatch.setattr(medir_grama, "countdown", raise_kbint)
-    result = medir_grama.main()
+    result = medir_grama.main([])
     assert result == 130
     assert "Cancelado" in capsys.readouterr().out
 
@@ -565,7 +631,7 @@ def test_main_no_green_detected_still_returns_zero_with_warning(monkeypatch, tmp
     monkeypatch.setattr(medir_grama, "capture_frames", lambda *a, **kw: empty_frames)
     monkeypatch.setattr(medir_grama, "countdown", lambda s: None)
     monkeypatch.setattr(medir_grama, "DEBUG_PATH", str(tmp_path / "out.png"))
-    result = medir_grama.main()
+    result = medir_grama.main([])
     assert result == 0
     assert "nenhuma grama" in capsys.readouterr().err.lower()
 
@@ -577,7 +643,7 @@ def test_main_reports_altura_em_cm(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(medir_grama, "capture_frames", lambda *a, **kw: _fake_green_frames())
     monkeypatch.setattr(medir_grama, "countdown", lambda s: None)
     monkeypatch.setattr(medir_grama, "DEBUG_PATH", str(tmp_path / "out.png"))
-    result = medir_grama.main()
+    result = medir_grama.main([])
     assert result == 0
     out = capsys.readouterr().out
     # Verde começa em y=240, chão y=420, px/cm=8 → altura = (420-240)/8 = 22.5cm
@@ -592,7 +658,7 @@ def test_main_output_inclui_margem_de_erro(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(medir_grama, "capture_frames", lambda *a, **kw: _fake_green_frames())
     monkeypatch.setattr(medir_grama, "countdown", lambda s: None)
     monkeypatch.setattr(medir_grama, "DEBUG_PATH", str(tmp_path / "out.png"))
-    result = medir_grama.main()
+    result = medir_grama.main([])
     assert result == 0
     out = capsys.readouterr().out
     # _fake_green_frames tem verde uniforme → 3 colunas com mesma altura →
