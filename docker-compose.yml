@@ -1,0 +1,29 @@
+# Postgres local para desenvolver offline, sem depender do Neon.
+# Opcional — só funciona depois que o Docker Desktop estiver instalado.
+#
+#   docker compose up -d
+#   # e no .env:
+#   DATABASE_URL=postgresql://grama:grama@localhost:5432/grama
+#   DATABASE_URL_TEST=postgresql://grama:grama@localhost:5432/grama_test
+#
+# O banco de teste precisa ser criado uma vez:
+#   docker compose exec db createdb -U grama grama_test
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: grama
+      POSTGRES_PASSWORD: grama
+      POSTGRES_DB: grama
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U grama"]
+      interval: 5s
+      retries: 5
+
+volumes:
+  pgdata:

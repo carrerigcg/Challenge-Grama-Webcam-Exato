@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: api-grama-webcam
+    runtime: python
+    # Oregon == AWS us-west-2. Crie o projeto Neon na MESMA região para as
+    # queries não atravessarem o continente a cada request.
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements-api.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      # sync: false faz o Render pedir o valor no dashboard, em vez de
+      # versionar segredo no Git.
+      - key: DATABASE_URL
+        sync: false
+      - key: API_KEY_WRITE
+        sync: false
+      - key: API_KEY_READ
+        sync: false

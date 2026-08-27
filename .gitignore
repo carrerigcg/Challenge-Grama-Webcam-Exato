@@ -10,6 +10,7 @@ calibration.json
 # API
 .env
 *.db
+backups/
 
 # Ferramentas
 .superpowers/
