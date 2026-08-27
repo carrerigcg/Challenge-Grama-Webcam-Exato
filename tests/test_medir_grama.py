@@ -734,6 +734,82 @@ def test_enviar_medicao_usa_chave_de_escrita_no_header(monkeypatch):
     assert capturado["X-API-Key"] == "chave-de-escrita"
 
 
+def test_enviar_medicao_usa_timeout_generoso(monkeypatch):
+    """Render free hiberna; acordar leva ~50s. Timeout curto perde a medição."""
+    capturado = {}
+
+    def _fake_post(url, json, headers, timeout):
+        capturado["timeout"] = timeout
+        return _RespostaFake()
+
+    monkeypatch.setattr(medir_grama.requests, "post", _fake_post)
+    monkeypatch.setattr(medir_grama, "API_KEY_WRITE", "chave")
+    monkeypatch.setattr(medir_grama, "REGIAO", "norte")
+
+    medir_grama.enviar_medicao(5.2, "MÉDIA")
+
+    assert capturado["timeout"] >= 60
+
+
+def test_enviar_medicao_repete_apos_timeout(monkeypatch, capsys):
+    """1ª tentativa acorda o Render, 2ª entrega o dado."""
+    tentativas = []
+
+    def _fake_post(url, json, headers, timeout):
+        tentativas.append(1)
+        if len(tentativas) == 1:
+            raise medir_grama.requests.Timeout("servico hibernando")
+        return _RespostaFake()
+
+    monkeypatch.setattr(medir_grama.requests, "post", _fake_post)
+    monkeypatch.setattr(medir_grama, "API_KEY_WRITE", "chave")
+    monkeypatch.setattr(medir_grama, "REGIAO", "norte")
+
+    medir_grama.enviar_medicao(5.2, "MÉDIA")
+
+    assert len(tentativas) == 2
+    assert "OK: medição enviada" in capsys.readouterr().out
+
+
+def test_enviar_medicao_nao_repete_quando_api_rejeita(monkeypatch):
+    """401/422 é erro de chave ou payload — repetir não conserta nada."""
+    tentativas = []
+
+    class _Resp401:
+        status_code = 401
+        text = "API key inválida"
+
+        def raise_for_status(self):
+            erro = medir_grama.requests.HTTPError("401")
+            erro.response = self
+            raise erro
+
+    def _fake_post(url, json, headers, timeout):
+        tentativas.append(1)
+        return _Resp401()
+
+    monkeypatch.setattr(medir_grama.requests, "post", _fake_post)
+    monkeypatch.setattr(medir_grama, "API_KEY_WRITE", "chave-errada")
+    monkeypatch.setattr(medir_grama, "REGIAO", "norte")
+
+    medir_grama.enviar_medicao(5.2, "MÉDIA")
+
+    assert len(tentativas) == 1
+
+
+def test_enviar_medicao_avisa_quando_todas_tentativas_falham(monkeypatch, capsys):
+    def _fake_post(url, json, headers, timeout):
+        raise medir_grama.requests.Timeout("sem resposta")
+
+    monkeypatch.setattr(medir_grama.requests, "post", _fake_post)
+    monkeypatch.setattr(medir_grama, "API_KEY_WRITE", "chave")
+    monkeypatch.setattr(medir_grama, "REGIAO", "norte")
+
+    medir_grama.enviar_medicao(5.2, "MÉDIA")
+
+    assert "AVISO" in capsys.readouterr().err
+
+
 def test_enviar_medicao_com_altura_none_envia_zero(monkeypatch):
     """AUSENTE não tem mediana; manda 0.0 pra API não rejeitar."""
     enviados = {}

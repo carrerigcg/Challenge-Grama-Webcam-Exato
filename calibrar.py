@@ -17,10 +17,15 @@ from datetime import datetime
 
 import cv2
 import numpy as np
+from dotenv import load_dotenv
+
+import camera
+
+load_dotenv()
 
 # --- Configurações -----------------------------------------------------------
-CAMERA_INDEX = 0
-CAMERA_BACKEND = cv2.CAP_MSMF
+CAMERA_INDEX = camera.detectar_indice()
+CAMERA_BACKEND = camera.detectar_backend()  # MSMF no Windows, V4L2 na Pi
 OUTPUT_PATH = "calibration.json"
 COR_PONTO_REF = (0, 255, 255)      # amarelo — pontos da régua
 COR_LINHA_REF = (0, 200, 200)      # amarelo escuro — linha entre eles

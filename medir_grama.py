@@ -11,11 +11,13 @@ import numpy as np
 import requests
 from dotenv import load_dotenv
 
+import camera
+
 load_dotenv()
 
 # --- Configurações -----------------------------------------------------------
-CAMERA_INDEX = 0
-CAMERA_BACKEND = cv2.CAP_MSMF
+CAMERA_INDEX = camera.detectar_indice()
+CAMERA_BACKEND = camera.detectar_backend()  # MSMF no Windows, V4L2 na Pi
 FRAME_COUNT = 5
 HSV_LOWER = (35, 40, 40)
 HSV_UPPER = (85, 255, 255)
@@ -39,6 +41,11 @@ COUNTDOWN_SECONDS = 3
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
 API_KEY_WRITE = os.environ.get("API_KEY_WRITE")  # chave de escrita da estação
 REGIAO = os.environ.get("REGIAO")  # identifica esta estação de captura
+# O plano gratuito do Render hiberna após ~15min ociosos e leva ~50s pra
+# acordar. Com captura semanal, TODA medição encontra o serviço dormindo —
+# timeout curto perderia o dado silenciosamente.
+ENVIO_TIMEOUT_S = 90
+ENVIO_TENTATIVAS = 2  # a 1ª acorda o serviço, a 2ª entrega
 
 
 # --- Funções -----------------------------------------------------------------
@@ -420,23 +427,39 @@ def enviar_medicao(altura_cm: float | None, categoria: str) -> None:
         "altura_cm": altura_cm if altura_cm is not None else 0.0,
         "nivel_risco": categoria.replace("MÉDIA", "MEDIA"),
     }
-    try:
-        r = requests.post(
-            f"{API_URL}/medicoes",
-            json=payload,
-            headers={"X-API-Key": API_KEY_WRITE},
-            timeout=10,
-        )
-        r.raise_for_status()
-        dados = r.json()
-        print(f"OK: medição enviada (id={dados['id']}, clima={dados['clima']})")
-    except requests.HTTPError as e:
-        print(
-            f"AVISO: API rejeitou (HTTP {e.response.status_code}): {e.response.text}",
-            file=sys.stderr,
-        )
-    except requests.RequestException as e:
-        print(f"AVISO: falha ao enviar medição: {e}", file=sys.stderr)
+    for tentativa in range(1, ENVIO_TENTATIVAS + 1):
+        try:
+            r = requests.post(
+                f"{API_URL}/medicoes",
+                json=payload,
+                headers={"X-API-Key": API_KEY_WRITE},
+                timeout=ENVIO_TIMEOUT_S,
+            )
+            r.raise_for_status()
+            dados = r.json()
+            print(f"OK: medição enviada (id={dados['id']}, clima={dados['clima']})")
+            return
+        except requests.HTTPError as e:
+            # Chave ou payload errado: repetir não conserta.
+            print(
+                f"AVISO: API rejeitou (HTTP {e.response.status_code}): "
+                f"{e.response.text}",
+                file=sys.stderr,
+            )
+            return
+        except requests.RequestException as e:
+            if tentativa < ENVIO_TENTATIVAS:
+                print(
+                    f"AVISO: tentativa {tentativa} falhou ({e}). "
+                    "Serviço pode estar hibernando; tentando de novo...",
+                    file=sys.stderr,
+                )
+                continue
+            print(
+                f"AVISO: falha ao enviar medição após {ENVIO_TENTATIVAS} "
+                f"tentativas: {e}",
+                file=sys.stderr,
+            )
 
 
 def main() -> int:
