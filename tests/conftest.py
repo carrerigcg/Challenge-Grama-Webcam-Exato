@@ -29,18 +29,29 @@ def _env_de_teste():
     return url
 
 
-@pytest.fixture
-def client(_env_de_teste):
+@pytest.fixture(scope="session")
+def _cliente_da_sessao(_env_de_teste):
+    """Abre o pool uma única vez.
+
+    Session-scoped de propósito: conectar no Neon custa TCP + TLS + auth, e
+    pagar isso por teste levava a suíte a mais de um minuto.
+    """
     from api import clima
     from api.main import app
 
     app.dependency_overrides[clima.clima_atual] = lambda: (21.5, "Nublado")
     # O `with` é o que dispara o lifespan e abre o pool.
     with TestClient(app) as c:
-        with app.state.pool.connection() as conn:
-            conn.execute("TRUNCATE medicoes RESTART IDENTITY")
         yield c
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def client(_cliente_da_sessao):
+    """Tabela limpa a cada teste, reaproveitando a conexão da sessão."""
+    with _cliente_da_sessao.app.state.pool.connection() as conn:
+        conn.execute("TRUNCATE medicoes RESTART IDENTITY")
+    return _cliente_da_sessao
 
 
 @pytest.fixture
