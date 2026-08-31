@@ -1,11 +1,12 @@
 """Script one-shot pra calibrar câmera fixa: gera calibration.json.
 
 Fluxo:
-1. Usuário informa quantos cm mede o segmento de referência (ex: 10.0).
-2. Abre preview da webcam. Usuário clica em 2 extremos do segmento.
-3. Usuário clica na linha do chão (base da grama).
-4. Congela frame, mostra marcações. ENTER=salvar, R=refazer, ESC=cancelar.
-5. Grava calibration.json.
+1. Usuário informa a região que identifica esta estação.
+2. Usuário informa quantos cm mede o segmento de referência (ex: 10.0).
+3. Abre preview da webcam. Usuário clica em 2 extremos do segmento.
+4. Usuário clica na linha do chão (base da grama).
+5. Congela frame, mostra marcações. ENTER=salvar, R=refazer, ESC=cancelar.
+6. Grava calibration.json (com regiao, px_por_cm, y_chao).
 """
 from __future__ import annotations
 
@@ -50,15 +51,23 @@ def calcular_px_por_cm(
 
 
 def montar_calibration_dict(
-    px_por_cm: float, y_chao: int, resolucao: tuple[int, int], cm_ref: float
+    px_por_cm: float,
+    y_chao: int,
+    resolucao: tuple[int, int],
+    cm_ref: float,
+    regiao: str | None = None,
 ) -> dict:
-    return {
+    dados = {
         "px_por_cm": float(px_por_cm),
         "y_chao": int(y_chao),
         "resolucao": [int(resolucao[0]), int(resolucao[1])],
         "created_at": datetime.now().replace(microsecond=0).isoformat(),
         "segmento_cm_referencia": float(cm_ref),
     }
+    # Opcional: se ausente, medir_grama.py cai no REGIAO do .env como fallback.
+    if regiao is not None:
+        dados["regiao"] = regiao
+    return dados
 
 
 def salvar_calibration(dados: dict, path: str) -> None:
@@ -70,6 +79,20 @@ def salvar_calibration(dados: dict, path: str) -> None:
 
 
 # --- UI (não testada, exige webcam) ------------------------------------------
+def _ler_regiao() -> str | None:
+    """Pergunta a região da estação. Retorna None se cancelado/vazio."""
+    try:
+        entrada = input(
+            "Regiao (identifica esta estação, ex: rodoanel norte): "
+        ).strip()
+        if not entrada:
+            print("ERRO: regiao não pode ser vazia", file=sys.stderr)
+            return None
+        return entrada
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+
 def _ler_cm_ref() -> float | None:
     """Pergunta ao usuário o tamanho em cm. Retorna None se cancelado/invalido."""
     try:
@@ -181,6 +204,11 @@ def _confirmar(
 
 
 def main() -> int:
+    regiao = _ler_regiao()
+    if regiao is None:
+        print("Cancelado.")
+        return 130
+
     cm_ref = _ler_cm_ref()
     if cm_ref is None:
         print("Cancelado.")
@@ -235,10 +263,13 @@ def main() -> int:
                 int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
                 int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
             )
-            dados = montar_calibration_dict(px_por_cm, y_chao, resolucao, cm_ref)
+            dados = montar_calibration_dict(
+                px_por_cm, y_chao, resolucao, cm_ref, regiao,
+            )
             salvar_calibration(dados, OUTPUT_PATH)
             print(
                 f"\nOK: {OUTPUT_PATH} salvo.\n"
+                f"   regiao    = {regiao}\n"
                 f"   px_por_cm = {px_por_cm:.2f}\n"
                 f"   y_chao    = {y_chao}\n"
                 f"   resolucao = {resolucao[0]}x{resolucao[1]}"

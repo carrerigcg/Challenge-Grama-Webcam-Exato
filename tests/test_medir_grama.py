@@ -572,12 +572,39 @@ def test_main_auto_ainda_envia_a_medicao(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(medir_grama, "DEBUG_PATH", str(tmp_path / "out.png"))
     monkeypatch.setattr(
-        medir_grama, "enviar_medicao", lambda a, c: enviadas.append((a, c))
+        medir_grama, "enviar_medicao",
+        lambda a, c, r=None: enviadas.append((a, c, r)),
     )
 
     medir_grama.main(["--auto"])
 
     assert len(enviadas) == 1
+
+
+def test_main_passa_regiao_da_calibration_pra_enviar_medicao(monkeypatch, tmp_path):
+    """calibration.json vira fonte de verdade da identidade da estação."""
+    enviadas = []
+
+    def _calibration_com_regiao(_):
+        cal = _fake_calibration()
+        cal["regiao"] = "rodoanel norte"
+        return cal
+
+    monkeypatch.setattr(medir_grama, "load_calibration", _calibration_com_regiao)
+    monkeypatch.setattr(medir_grama, "preview_camera", _explode)
+    monkeypatch.setattr(medir_grama, "countdown", _explode)
+    monkeypatch.setattr(
+        medir_grama, "capture_frames", lambda *a, **kw: _fake_green_frames()
+    )
+    monkeypatch.setattr(medir_grama, "DEBUG_PATH", str(tmp_path / "out.png"))
+    monkeypatch.setattr(
+        medir_grama, "enviar_medicao",
+        lambda a, c, r=None: enviadas.append((a, c, r)),
+    )
+
+    medir_grama.main(["--auto"])
+
+    assert enviadas[0][2] == "rodoanel norte"
 
 
 def test_main_sem_auto_continua_mostrando_preview(monkeypatch, tmp_path):
@@ -773,24 +800,6 @@ def test_enviar_medicao_inclui_regiao_do_env(monkeypatch):
     assert enviados["nivel_risco"] == "MEDIA"
 
 
-def test_enviar_medicao_sem_regiao_avisa_e_nao_envia(monkeypatch, capsys):
-    chamou = False
-
-    def _fake_post(*a, **k):
-        nonlocal chamou
-        chamou = True
-        return _RespostaFake()
-
-    monkeypatch.setattr(medir_grama.requests, "post", _fake_post)
-    monkeypatch.setattr(medir_grama, "API_KEY_WRITE", "chave")
-    monkeypatch.setattr(medir_grama, "REGIAO", None)
-
-    medir_grama.enviar_medicao(5.2, "MÉDIA")
-
-    assert chamou is False
-    assert "REGIAO" in capsys.readouterr().err
-
-
 def test_enviar_medicao_usa_chave_de_escrita_no_header(monkeypatch):
     """A estação escreve, então carrega API_KEY_WRITE — nunca a de leitura."""
     capturado = {}
@@ -919,6 +928,60 @@ def test_enviar_medicao_inclui_clima_quando_buscar_clima_retorna_valores(monkeyp
 
     assert enviados["temperatura_c"] == 22.3
     assert enviados["clima"] == "Ensolarado"
+
+
+def test_enviar_medicao_regiao_explicita_vence_env(monkeypatch):
+    """Calibration.json é fonte de verdade; .env é só fallback pra estações
+    antigas que não recalibraram ainda."""
+    enviados = {}
+
+    def _fake_post(url, json, headers, timeout):
+        enviados.update(json)
+        return _RespostaFake()
+
+    monkeypatch.setattr(medir_grama.requests, "post", _fake_post)
+    monkeypatch.setattr(medir_grama, "API_KEY_WRITE", "chave")
+    monkeypatch.setattr(medir_grama, "REGIAO", "envval-antigo")
+
+    medir_grama.enviar_medicao(5.2, "MÉDIA", regiao="calibrado-novo")
+
+    assert enviados["regiao"] == "calibrado-novo"
+
+
+def test_enviar_medicao_cai_no_env_quando_regiao_none(monkeypatch):
+    """Estação antiga sem regiao na calibration.json continua funcionando."""
+    enviados = {}
+
+    def _fake_post(url, json, headers, timeout):
+        enviados.update(json)
+        return _RespostaFake()
+
+    monkeypatch.setattr(medir_grama.requests, "post", _fake_post)
+    monkeypatch.setattr(medir_grama, "API_KEY_WRITE", "chave")
+    monkeypatch.setattr(medir_grama, "REGIAO", "fallback-env")
+
+    medir_grama.enviar_medicao(5.2, "MÉDIA", regiao=None)
+
+    assert enviados["regiao"] == "fallback-env"
+
+
+def test_enviar_medicao_sem_regiao_em_lugar_nenhum_avisa(monkeypatch, capsys):
+    """Sem calibration.json e sem .env: aviso claro, não envia."""
+    chamou = False
+
+    def _fake_post(*a, **k):
+        nonlocal chamou
+        chamou = True
+        return _RespostaFake()
+
+    monkeypatch.setattr(medir_grama.requests, "post", _fake_post)
+    monkeypatch.setattr(medir_grama, "API_KEY_WRITE", "chave")
+    monkeypatch.setattr(medir_grama, "REGIAO", None)
+
+    medir_grama.enviar_medicao(5.2, "MÉDIA", regiao=None)
+
+    assert chamou is False
+    assert "regiao" in capsys.readouterr().err.lower()
 
 
 def test_enviar_medicao_omite_clima_quando_open_meteo_falha(monkeypatch):

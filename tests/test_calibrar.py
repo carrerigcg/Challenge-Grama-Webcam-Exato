@@ -52,6 +52,22 @@ def test_montar_calibration_dict_contem_todos_os_campos():
     assert "T" in data["created_at"]
 
 
+def test_montar_calibration_dict_inclui_regiao_quando_passada():
+    data = calibrar.montar_calibration_dict(
+        px_por_cm=8.5, y_chao=420, resolucao=(640, 480), cm_ref=10.0,
+        regiao="rodoanel norte",
+    )
+    assert data["regiao"] == "rodoanel norte"
+
+
+def test_montar_calibration_dict_omite_regiao_quando_none():
+    """Backwards compat: calibrações antigas sem regiao continuam válidas."""
+    data = calibrar.montar_calibration_dict(
+        px_por_cm=8.5, y_chao=420, resolucao=(640, 480), cm_ref=10.0,
+    )
+    assert "regiao" not in data
+
+
 def test_salvar_calibration_cria_arquivo(tmp_path):
     path = tmp_path / "cal.json"
     data = {"px_por_cm": 8.0, "y_chao": 400, "resolucao": [640, 480]}
@@ -68,6 +84,24 @@ def test_salvar_calibration_overwrite_existing(tmp_path):
     calibrar.salvar_calibration(novo, str(path))
     loaded = json.loads(path.read_text(encoding="utf-8"))
     assert loaded == novo
+
+
+def test_ler_regiao_devolve_valor_stripado(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda _: "  rodoanel sul  ")
+    assert calibrar._ler_regiao() == "rodoanel sul"
+
+
+def test_ler_regiao_vazio_devolve_none(monkeypatch, capsys):
+    monkeypatch.setattr("builtins.input", lambda _: "   ")
+    assert calibrar._ler_regiao() is None
+    assert "regiao" in capsys.readouterr().err.lower()
+
+
+def test_ler_regiao_ctrl_c_devolve_none(monkeypatch):
+    def _boom(_):
+        raise KeyboardInterrupt
+    monkeypatch.setattr("builtins.input", _boom)
+    assert calibrar._ler_regiao() is None
 
 
 def test_salvar_calibration_uses_utf8_encoding(tmp_path):

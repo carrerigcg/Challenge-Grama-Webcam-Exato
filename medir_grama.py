@@ -410,17 +410,26 @@ def _desenhar_regua(
              (255, 255, 255), 1)
 
 
-def enviar_medicao(altura_cm: float | None, categoria: str) -> None:
-    """POST da medição pra API. Falhas viram avisos, nunca crasham o script."""
+def enviar_medicao(
+    altura_cm: float | None, categoria: str, regiao: str | None = None,
+) -> None:
+    """POST da medição pra API. Falhas viram avisos, nunca crasham o script.
+
+    regiao: identifica a estação. Se None, usa REGIAO do .env como fallback.
+    Fonte de verdade é calibration.json — o .env sobrevive só pra estações
+    antigas que não recalibraram ainda.
+    """
     if not API_KEY_WRITE:
         print(
             "AVISO: API_KEY_WRITE não configurada, medição não enviada",
             file=sys.stderr,
         )
         return
-    if not REGIAO:
+    regiao_final = regiao or REGIAO
+    if not regiao_final:
         print(
-            "AVISO: REGIAO não configurada no .env, medição não enviada",
+            "AVISO: regiao não configurada (nem calibration.json nem .env), "
+            "medição não enviada",
             file=sys.stderr,
         )
         return
@@ -428,7 +437,7 @@ def enviar_medicao(altura_cm: float | None, categoria: str) -> None:
     # IP compartilhado do Render). Se falhar, a medição vai sem clima.
     temperatura, descricao = buscar_clima(SP_LAT, SP_LON)
     payload = {
-        "regiao": REGIAO,
+        "regiao": regiao_final,
         "altura_cm": altura_cm if altura_cm is not None else 0.0,
         "nivel_risco": categoria.replace("MÉDIA", "MEDIA"),
     }
@@ -492,6 +501,7 @@ def main(argv: list[str] | None = None) -> int:
         calibration = load_calibration(CALIBRATION_PATH)
         y_chao = calibration["y_chao"]
         px_por_cm = float(calibration["px_por_cm"])
+        regiao_da_estacao = calibration.get("regiao")
         if not args.auto:
             if not preview_camera(
                 CAMERA_INDEX, CAMERA_BACKEND, SAMPLE_COLS,
@@ -517,7 +527,7 @@ def main(argv: list[str] | None = None) -> int:
             SAMPLE_COLS, y_chao, px_por_cm, categoria, DEBUG_PATH,
         )
         print(f"OK: {DEBUG_PATH} salvo")
-        enviar_medicao(altura_mediana, categoria)
+        enviar_medicao(altura_mediana, categoria, regiao_da_estacao)
         return 0
     except KeyboardInterrupt:
         print("Cancelado.")
