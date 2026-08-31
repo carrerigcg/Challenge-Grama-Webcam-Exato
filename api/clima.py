@@ -1,6 +1,8 @@
 """Cliente do Open-Meteo — busca temperatura e condição do tempo."""
 from __future__ import annotations
 
+import sys
+
 import requests
 
 # São Paulo/SP — usado pra buscar clima no Open-Meteo
@@ -49,7 +51,11 @@ def buscar_clima(lat: float, lon: float) -> tuple[float | None, str | None]:
         temperatura = dados["temperature_2m"]
         clima = WEATHER_CODE_MAP.get(dados["weather_code"], "Desconhecido")
         return temperatura, clima
-    except (requests.RequestException, KeyError, ValueError):
+    except (requests.RequestException, KeyError, ValueError) as e:
+        print(
+            f"AVISO: buscar_clima falhou: {type(e).__name__}: {e}",
+            file=sys.stderr,
+        )
         return None, None
 
 
