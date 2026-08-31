@@ -36,14 +36,11 @@ def _cliente_da_sessao(_env_de_teste):
     Session-scoped de propósito: conectar no Neon custa TCP + TLS + auth, e
     pagar isso por teste levava a suíte a mais de um minuto.
     """
-    from api import clima
     from api.main import app
 
-    app.dependency_overrides[clima.clima_atual] = lambda: (21.5, "Nublado")
     # O `with` é o que dispara o lifespan e abre o pool.
     with TestClient(app) as c:
         yield c
-    app.dependency_overrides.clear()
 
 
 @pytest.fixture

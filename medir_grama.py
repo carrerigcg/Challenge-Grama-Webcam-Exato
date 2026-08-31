@@ -13,6 +13,7 @@ import requests
 from dotenv import load_dotenv
 
 import camera
+from clima import SP_LAT, SP_LON, buscar_clima
 
 load_dotenv()
 
@@ -423,11 +424,18 @@ def enviar_medicao(altura_cm: float | None, categoria: str) -> None:
             file=sys.stderr,
         )
         return
+    # Clima é buscado aqui na estação (IP residencial, sem rate-limit do
+    # IP compartilhado do Render). Se falhar, a medição vai sem clima.
+    temperatura, descricao = buscar_clima(SP_LAT, SP_LON)
     payload = {
         "regiao": REGIAO,
         "altura_cm": altura_cm if altura_cm is not None else 0.0,
         "nivel_risco": categoria.replace("MÉDIA", "MEDIA"),
     }
+    if temperatura is not None:
+        payload["temperatura_c"] = temperatura
+    if descricao is not None:
+        payload["clima"] = descricao
     for tentativa in range(1, ENVIO_TENTATIVAS + 1):
         try:
             r = requests.post(

@@ -1,4 +1,9 @@
-"""Cliente do Open-Meteo — busca temperatura e condição do tempo."""
+"""Cliente do Open-Meteo — busca temperatura e condição do tempo.
+
+Vive na raiz (não em api/) porque é a estação que chama, não a API:
+o IP compartilhado do Render sofre rate-limit 429 por vizinho barulhento,
+enquanto o IP residencial da estação tem cota própria de 10k/dia.
+"""
 from __future__ import annotations
 
 import sys
@@ -57,8 +62,3 @@ def buscar_clima(lat: float, lon: float) -> tuple[float | None, str | None]:
             file=sys.stderr,
         )
         return None, None
-
-
-def clima_atual() -> tuple[float | None, str | None]:
-    """Dependency do FastAPI — testes sobrescrevem via dependency_overrides."""
-    return buscar_clima(SP_LAT, SP_LON)

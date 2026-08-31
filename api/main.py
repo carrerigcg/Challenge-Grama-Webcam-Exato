@@ -12,7 +12,6 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 from api import db
-from api.clima import clima_atual
 
 load_dotenv()
 
@@ -71,6 +70,11 @@ class MedicaoIn(BaseModel):
     regiao: str = Field(min_length=1)
     altura_cm: float = Field(ge=0)
     nivel_risco: NivelRisco
+    # Clima vem da estação (IP residencial, sem rate-limit compartilhado do
+    # Render). Opcional: se a estação estiver offline pro Open-Meteo, a
+    # medição salva mesmo assim.
+    temperatura_c: float | None = None
+    clima: str | None = None
 
 
 class MedicaoOut(BaseModel):
@@ -94,12 +98,7 @@ def raiz():
     response_model=MedicaoOut,
     dependencies=[Depends(requer_escrita)],
 )
-def criar_medicao(
-    medicao: MedicaoIn,
-    request: Request,
-    clima: tuple[float | None, str | None] = Depends(clima_atual),
-):
-    temperatura, descricao = clima
+def criar_medicao(medicao: MedicaoIn, request: Request):
     with request.app.state.pool.connection() as conn:
         row = conn.execute(
             """
@@ -112,8 +111,8 @@ def criar_medicao(
                 medicao.regiao,
                 medicao.altura_cm,
                 medicao.nivel_risco.value,
-                temperatura,
-                descricao,
+                medicao.temperatura_c,
+                medicao.clima,
             ),
         ).fetchone()
     return row

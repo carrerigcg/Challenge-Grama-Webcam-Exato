@@ -1,7 +1,7 @@
 """Testes do cliente Open-Meteo."""
 import requests
 
-from api import clima
+import clima
 
 
 class _FakeResponse:
@@ -43,7 +43,7 @@ def test_falha_de_rede_retorna_none_none(monkeypatch):
     assert clima.buscar_clima(-23.55, -46.63) == (None, None)
 
 
-def test_clima_atual_usa_coordenadas_de_sao_paulo(monkeypatch):
+def test_buscar_clima_repassa_coordenadas_recebidas(monkeypatch):
     chamadas = {}
 
     def _captura(url, params, timeout):
@@ -54,6 +54,6 @@ def test_clima_atual_usa_coordenadas_de_sao_paulo(monkeypatch):
 
     monkeypatch.setattr(requests, "get", _captura)
 
-    assert clima.clima_atual() == (18.0, "Ensolarado")
+    assert clima.buscar_clima(clima.SP_LAT, clima.SP_LON) == (18.0, "Ensolarado")
     assert chamadas["params"]["latitude"] == clima.SP_LAT
     assert chamadas["params"]["longitude"] == clima.SP_LON

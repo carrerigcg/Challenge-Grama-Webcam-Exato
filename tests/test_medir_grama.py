@@ -7,6 +7,14 @@ import pytest
 import medir_grama
 
 
+@pytest.fixture(autouse=True)
+def _stub_buscar_clima(monkeypatch):
+    """Impede chamada real ao Open-Meteo em qualquer teste que exercite
+    enviar_medicao. Testes que querem verificar clima no payload sobrescrevem
+    monkeypatch.setattr(medir_grama, "buscar_clima", ...) explicitamente."""
+    monkeypatch.setattr(medir_grama, "buscar_clima", lambda lat, lon: (None, None))
+
+
 # --- load_calibration --------------------------------------------------------
 def _valid_calibration_dict():
     return {
@@ -892,3 +900,40 @@ def test_enviar_medicao_com_altura_none_envia_zero(monkeypatch):
 
     assert enviados["altura_cm"] == 0.0
     assert enviados["nivel_risco"] == "AUSENTE"
+
+
+def test_enviar_medicao_inclui_clima_quando_buscar_clima_retorna_valores(monkeypatch):
+    """Estação fetch-a Open-Meteo antes de postar e inclui no payload."""
+    enviados = {}
+
+    def _fake_post(url, json, headers, timeout):
+        enviados.update(json)
+        return _RespostaFake()
+
+    monkeypatch.setattr(medir_grama.requests, "post", _fake_post)
+    monkeypatch.setattr(medir_grama, "buscar_clima", lambda lat, lon: (22.3, "Ensolarado"))
+    monkeypatch.setattr(medir_grama, "API_KEY_WRITE", "chave")
+    monkeypatch.setattr(medir_grama, "REGIAO", "norte")
+
+    medir_grama.enviar_medicao(5.2, "MÉDIA")
+
+    assert enviados["temperatura_c"] == 22.3
+    assert enviados["clima"] == "Ensolarado"
+
+
+def test_enviar_medicao_omite_clima_quando_open_meteo_falha(monkeypatch):
+    """Falha silenciosa do Open-Meteo (autouse stub) → payload sem clima."""
+    enviados = {}
+
+    def _fake_post(url, json, headers, timeout):
+        enviados.update(json)
+        return _RespostaFake()
+
+    monkeypatch.setattr(medir_grama.requests, "post", _fake_post)
+    monkeypatch.setattr(medir_grama, "API_KEY_WRITE", "chave")
+    monkeypatch.setattr(medir_grama, "REGIAO", "norte")
+
+    medir_grama.enviar_medicao(5.2, "MÉDIA")
+
+    assert "temperatura_c" not in enviados
+    assert "clima" not in enviados

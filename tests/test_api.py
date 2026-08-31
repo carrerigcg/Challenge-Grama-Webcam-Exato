@@ -1,13 +1,21 @@
 """Testes dos endpoints da API."""
 
 
-def _payload(regiao="mato do matheus", altura=5.2, risco="MEDIA"):
-    return {"regiao": regiao, "altura_cm": altura, "nivel_risco": risco}
+def _payload(regiao="mato do matheus", altura=5.2, risco="MEDIA", **extras):
+    corpo = {"regiao": regiao, "altura_cm": altura, "nivel_risco": risco}
+    corpo.update(extras)
+    return corpo
 
 
 # --- POST /medicoes ----------------------------------------------------------
-def test_post_grava_medicao_com_clima(client, headers_escrita):
-    r = client.post("/medicoes", json=_payload(), headers=headers_escrita)
+def test_post_persiste_clima_enviado_pela_estacao(client, headers_escrita):
+    """API só armazena — clima vem da estação (o IP compartilhado do Render
+    toma 429 do Open-Meteo, o IP residencial da estação não)."""
+    r = client.post(
+        "/medicoes",
+        json=_payload(temperatura_c=21.5, clima="Nublado"),
+        headers=headers_escrita,
+    )
     assert r.status_code == 200
     corpo = r.json()
     assert corpo["id"] == 1
@@ -15,6 +23,15 @@ def test_post_grava_medicao_com_clima(client, headers_escrita):
     assert corpo["altura_cm"] == 5.2
     assert corpo["temperatura_c"] == 21.5
     assert corpo["clima"] == "Nublado"
+
+
+def test_post_sem_clima_persiste_null(client, headers_escrita):
+    """Se a estação estiver offline pro Open-Meteo, a medição salva sem clima."""
+    r = client.post("/medicoes", json=_payload(), headers=headers_escrita)
+    assert r.status_code == 200
+    corpo = r.json()
+    assert corpo["temperatura_c"] is None
+    assert corpo["clima"] is None
 
 
 def test_post_persiste_de_fato_no_banco(client, headers_escrita, headers_leitura):
