@@ -239,3 +239,37 @@ def test_criar_pool_nao_conecta_antes_de_abrir():
     """open=False deixa quem chama decidir a hora de conectar (lifespan/fixture)."""
     p = db.criar_pool("postgresql://ninguem@localhost:1/inexistente")
     assert p.closed
+
+
+def test_criar_schema_cria_tabela_previsoes(pool):
+    db.criar_schema(pool)
+    with pool.connection() as conn:
+        row = conn.execute("SELECT to_regclass('public.previsoes') AS t").fetchone()
+    assert row["t"] == "previsoes"
+
+
+def test_previsoes_guarda_bytes_intactos(pool):
+    """BYTEA tem que devolver byte a byte o que entrou — xlsx é binário."""
+    db.criar_schema(pool)
+    conteudo = b"PK\x03\x04\x00\xff\xfe qualquer binario"
+    with pool.connection() as conn:
+        conn.execute("TRUNCATE previsoes RESTART IDENTITY")
+        conn.execute(
+            "INSERT INTO previsoes (nome_arquivo, conteudo, tamanho_bytes) "
+            "VALUES (%s, %s, %s)",
+            ("p.xlsx", conteudo, len(conteudo)),
+        )
+        row = conn.execute("SELECT conteudo FROM previsoes").fetchone()
+    assert bytes(row["conteudo"]) == conteudo
+
+
+def test_criar_schema_cria_indice_de_previsoes_por_data(pool):
+    """O GET pega a mais recente; sem índice isso vira scan da tabela toda."""
+    db.criar_schema(pool)
+    with pool.connection() as conn:
+        row = conn.execute(
+            "SELECT indexname FROM pg_indexes "
+            "WHERE tablename = 'previsoes' AND indexname = %s",
+            ("idx_previsoes_criado_em",),
+        ).fetchone()
+    assert row is not None

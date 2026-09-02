@@ -62,6 +62,24 @@ CREATE TABLE IF NOT EXISTS leituras (
 
 CREATE INDEX IF NOT EXISTS idx_leituras_regiao_criado_em
     ON leituras (regiao, criado_em DESC);
+
+-- BYTEA em vez de arquivo em disco: o filesystem do Render free e efemero
+-- (recriado a cada deploy e apos hibernar por inatividade), entao qualquer
+-- planilha salva em disco some sozinha. Um provedor externo (R2/B2) evitaria
+-- isso, mas exige conta e credenciais a mais contra o requisito de zero
+-- custo/dependencia. O Postgres ja resolve: TOAST comprime e guarda valores
+-- grandes fora da linha automaticamente, e uma planilha de poucos KB nao
+-- chega perto do limite gratuito de 0.5 GB do Neon.
+CREATE TABLE IF NOT EXISTS previsoes (
+    id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    nome_arquivo  TEXT NOT NULL,
+    conteudo      BYTEA NOT NULL,
+    tamanho_bytes BIGINT NOT NULL,
+    criado_em     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_previsoes_criado_em
+    ON previsoes (criado_em DESC);
 """
 
 
