@@ -403,36 +403,30 @@ def test_post_previsao_rejeita_nome_com_aspas(client, headers_escrita):
     assert _contar_previsoes(client) == 0
 
 
-def test_post_previsao_barra_invertida_no_nome(client, headers_escrita):
-    """"\\" está na lista de caracteres proibidos (api/main.py) porque é o
-    caractere de escape dentro de um quoted-string HTTP — um nome terminado
-    em "\\" quebraria uma formatação ingênua do Content-Disposition da
-    Task 6 mesmo sem conter aspas.
+def test_post_previsao_normaliza_caminho_estilo_windows_no_nome(
+    client, headers_escrita
+):
+    """A sanitização do nome não pode depender do SO onde a API roda: o nome
+    vem de um cliente HTTP qualquer, nunca do filesystem do servidor. Um
+    caminho estilo Windows (barra invertida) tem que virar só o nome do
+    arquivo, exatamente como o caminho estilo Unix já testado em
+    `test_post_previsao_descarta_caminho_no_nome` — e com o mesmo resultado
+    não importa em qual SO o processo da API esteja de fato rodando.
 
-    ACHADO ao escrever este teste (rodando em Windows, onde `os.path` é
-    `ntpath`): `os.path.basename()`, chamado ANTES da checagem explícita de
-    caracteres, já trata "\\" como separador de caminho e corta tudo até o
-    último "\\" — então este payload chega em `criar_previsao` como
-    ".xlsx", sem barra nenhuma, e a checagem nova nunca roda pra este caso
-    específico. Em produção (Render, Linux) `os.path` é `posixpath`, que
-    NÃO trata "\\" como separador: lá a barra sobrevive ao basename e é a
-    checagem explícita — não o basename — que barra o upload com 400. A
-    garantia que interessa (o nome gravado nunca carrega "\\") vale nas
-    duas plataformas, só que por mecanismos diferentes; este teste aceita
-    os dois desfechos e checa a garantia real em cada um, em vez de fixar
-    um status_code que já se provou dependente de SO.
+    (api/main.py normaliza "\\" e "/" explicitamente antes de qualquer outra
+    checagem — ver o comentário lá sobre por que `os.path.basename` era a
+    ferramenta errada pra isto.)
     """
     r = client.post(
         "/previsoes",
-        content=_upload_raw("previsao\\.xlsx"),
+        content=_upload_raw("C:\\Users\\alguem\\previsao.xlsx"),
         headers=_headers_multipart_cru(headers_escrita),
     )
-    assert r.status_code in (201, 400)
-    if r.status_code == 201:
-        assert "\\" not in r.json()["nome_arquivo"]
-        assert _contar_previsoes(client) == 1
-    else:
-        assert _contar_previsoes(client) == 0
+    assert r.status_code == 201
+    nome_arquivo = r.json()["nome_arquivo"]
+    assert nome_arquivo == "previsao.xlsx"
+    assert "\\" not in nome_arquivo
+    assert "/" not in nome_arquivo
 
 
 def test_post_previsao_rejeita_nome_longo_demais(client, headers_escrita):

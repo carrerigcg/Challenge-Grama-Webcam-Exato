@@ -254,7 +254,8 @@ async def rejeitar_previsao_grande_por_content_length(request: Request, call_nex
                 declarado = int(content_length)
             except ValueError:
                 declarado = None
-            if declarado is not None and declarado > TAMANHO_MAX_PREVISAO + MARGEM_MULTIPART_BYTES:
+            teto = TAMANHO_MAX_PREVISAO + MARGEM_MULTIPART_BYTES
+            if declarado is not None and declarado > teto:
                 return JSONResponse(
                     status_code=413, content={"detail": "Arquivo acima de 10 MB"}
                 )
@@ -277,7 +278,16 @@ class PrevisaoOut(BaseModel):
 def criar_previsao(request: Request, arquivo: UploadFile = File(...)):
     # `def` e não `async def`: o psycopg aqui é síncrono, e num handler async
     # ele travaria o event loop. Sendo `def`, o FastAPI joga num threadpool.
-    nome = os.path.basename(arquivo.filename or "")
+    #
+    # O nome vem de um cliente HTTP qualquer, não do filesystem do servidor,
+    # então os.path.basename é a ferramenta errada: no Windows ele corta em
+    # "\", no Linux não, e a mesma entrada seria sanitizada de dois jeitos
+    # conforme onde a API estivesse rodando (achado testando isto: em
+    # produção, Render/Linux, "\" nem seria tratado como separador — a
+    # checagem de caracteres proibidos abaixo é que faria o trabalho; no
+    # Windows do dev, o basename já cortava antes da checagem rodar).
+    # Normaliza os dois separadores explicitamente, sem depender do SO.
+    nome = (arquivo.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
     if not nome.lower().endswith(".xlsx"):
         raise HTTPException(400, "O arquivo precisa ser .xlsx")
     # O nome vem do cliente e vai parar num header Content-Disposition no GET.
@@ -287,6 +297,12 @@ def criar_previsao(request: Request, arquivo: UploadFile = File(...)):
     # ingênua tipo f'filename="{nome}"' mesmo sem conter aspas; um nome
     # absurdamente longo também estoura limites de header. Recusa antes de
     # guardar — o banco não tem como desfazer isso depois.
+    #
+    # A normalização acima já garante que "\" e "/" nunca sobrevivem em
+    # `nome` — então checar "\" aqui de novo é defesa em profundidade, não a
+    # guarda principal. Mantém mesmo assim: se um dia a normalização mudar
+    # (ou alguém remover o rsplit acima), esta lista é o que ainda protege
+    # o header.
     if len(nome) > 200:
         raise HTTPException(400, "Nome de arquivo longo demais")
     if (
