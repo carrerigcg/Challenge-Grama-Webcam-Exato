@@ -22,16 +22,21 @@ def pool():
 
 @pytest.fixture(scope="module", autouse=True)
 def _restaura_schema_no_fim_do_modulo():
-    """Rede de segurança: vários testes aqui dropam `leituras`/`medicoes` e
-    contam com a chamada a `criar_schema` mais adiante NO MESMO teste pra
-    devolver o estado normal. Se uma asserção ou o próprio `criar_schema`
-    levantar no meio do caminho, a tabela fica dropada — e, como o banco de
-    teste é compartilhado entre os testes (não há TRUNCATE por teste aqui),
-    isso viraria uma cascata de falhas escondendo a falha real, ou pior:
-    o stub de uma coluna só de `test_criar_schema_nao_mexe_se_as_duas_tabelas_existirem`
-    sobreviveria e seria renomeado pra `leituras` na PRÓXIMA execução, com o
-    `CREATE TABLE IF NOT EXISTS` recusando completar as colunas que faltam.
-    Roda uma vez, no fim do módulo, independente de sucesso ou falha.
+    """Rede de segurança contra contaminação ENTRE EXECUÇÕES da suíte — não
+    entre testes desta execução. Sendo module-scoped, roda uma vez só, depois
+    do último teste do módulo: se um teste no meio quebrar tudo, os testes
+    seguintes NA MESMA RODADA ainda veem o banco quebrado (medido na prática:
+    trocar pra function-scoped isolaria cada teste, mas custou ~26s a mais
+    nesta suíte — 62s contra 36s — e não vale o preço aqui).
+
+    O que ela evita de verdade: vários testes aqui dropam `leituras`/
+    `medicoes` e contam com a chamada a `criar_schema` mais adiante NO MESMO
+    teste pra devolver o estado normal; se isso falhar no meio do caminho, a
+    tabela fica dropada até o fim da rodada. Sem essa rede, a PRÓXIMA
+    execução da suíte herdaria esse banco quebrado — por exemplo, o stub de
+    uma coluna só de `test_criar_schema_nao_mexe_se_as_duas_tabelas_existirem`
+    sobrevivendo e sendo renomeado pra `leituras`, com `CREATE TABLE IF NOT
+    EXISTS` recusando completar as colunas que faltam.
     """
     yield
     url = os.environ.get("DATABASE_URL_TEST")
@@ -41,6 +46,13 @@ def _restaura_schema_no_fim_do_modulo():
     p.open()
     try:
         with p.connection() as conn:
+            # As duas — não só `medicoes`. Um `leituras` malformado (o stub de
+            # uma coluna só de test_criar_schema_nao_mexe_se_as_duas_tabelas_existirem,
+            # por exemplo) faz o `CREATE TABLE IF NOT EXISTS` da SCHEMA_SQL virar
+            # no-op e o `CREATE INDEX ... (regiao, ...)` seguinte estourar
+            # UndefinedColumn — a própria função de restauração quebraria e
+            # deixaria o banco de teste no estado exato que ela deveria evitar.
+            conn.execute("DROP TABLE IF EXISTS leituras")
             conn.execute("DROP TABLE IF EXISTS medicoes")
         db.criar_schema(p)
     finally:
@@ -102,22 +114,28 @@ def test_criar_schema_cria_do_zero_sem_tabela_antiga(pool):
 def test_criar_schema_e_idempotente(pool):
     """`assert n >= 0` nunca falharia — o que prova idempotência de verdade é
     a linha sobreviver: se a segunda chamada dropasse e recriasse a tabela,
-    ela teria sumido."""
+    ela teria sumido. Conta em vez de `.fetchone()` pra rodagens repetidas
+    não acumularem duplicata silenciosa e ainda passar; limpa a própria linha
+    no final — `test_db.py` não tem TRUNCATE por teste."""
     db.criar_schema(pool)
-    with pool.connection() as conn:
-        conn.execute(
-            "INSERT INTO leituras (regiao, altura_cm, nivel_risco) "
-            "VALUES ('sobrevive', 9.9, 'ALTA')"
-        )
+    try:
+        with pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO leituras (regiao, altura_cm, nivel_risco) "
+                "VALUES ('sobrevive', 9.9, 'ALTA')"
+            )
 
-    db.criar_schema(pool)  # rodar de novo não pode dropar nem recriar a tabela
+        db.criar_schema(pool)  # rodar de novo não pode dropar nem recriar a tabela
 
-    with pool.connection() as conn:
-        row = conn.execute(
-            "SELECT altura_cm FROM leituras WHERE regiao = 'sobrevive'"
-        ).fetchone()
-    assert row is not None
-    assert row["altura_cm"] == 9.9
+        with pool.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) AS n FROM leituras "
+                "WHERE regiao = 'sobrevive' AND altura_cm = 9.9"
+            ).fetchone()
+        assert row["n"] == 1
+    finally:
+        with pool.connection() as conn:
+            conn.execute("DELETE FROM leituras WHERE regiao = 'sobrevive'")
 
 
 def test_criar_schema_cria_indice_por_regiao(pool):
@@ -166,12 +184,17 @@ def test_criar_schema_renomeia_o_indice_junto(pool):
     assert row is not None
 
 
-def test_criar_schema_nao_deixa_objeto_nenhum_chamado_medicoes(pool):
+def test_criar_schema_nao_deixa_indice_ou_sequence_orfaos(pool):
     """`idx_leituras_regiao_criado_em` sozinho não pega tudo: a sequence da
     IDENTITY e o índice da PK também são renomeados pelo RENAME_SQL, e um
     teste que olhasse só pro índice nomeado explicitamente não pegaria uma
     regressão ali — passaria mesmo com `leituras` carregando sequence/pkey
     ainda chamados `medicoes_*`.
+
+    Não cobre TODO objeto: as constraints NOT NULL (nomeadas em pg_constraint
+    a partir do PG 18) ficam `medicoes_*_not_null` de propósito — não têm
+    `RENAME CONSTRAINT ... IF EXISTS`, e forçar isso arriscaria abortar o
+    boot da API por um nome cosmético. Ver o comentário do RENAME_SQL.
     """
     _criar_legado(pool)
 
@@ -184,7 +207,8 @@ def test_criar_schema_nao_deixa_objeto_nenhum_chamado_medicoes(pool):
         ).fetchall()
         sequences_orfas = conn.execute(
             "SELECT relname FROM pg_class "
-            "WHERE relkind = 'S' AND relname LIKE 'medicoes%'"
+            "WHERE relkind = 'S' AND relnamespace = 'public'::regnamespace "
+            "AND relname LIKE 'medicoes%'"
         ).fetchall()
     assert indices_orfaos == []
     assert sequences_orfas == []

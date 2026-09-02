@@ -18,6 +18,17 @@ from psycopg_pool import ConnectionPool
 # (mesmo objeto internamente) — não precisa de ALTER TABLE RENAME CONSTRAINT
 # à parte.
 #
+# Decisão consciente: as constraints NOT NULL (`medicoes_id_not_null`,
+# `medicoes_regiao_not_null` etc. — nomeadas em pg_constraint a partir do
+# PG 18) NÃO são renomeadas e ficam com o nome antigo pra sempre. Elas não
+# têm `RENAME CONSTRAINT ... IF EXISTS`: renomear uma que não existe levanta
+# UndefinedObject e aborta o bloco `DO` inteiro, virando um jeito de a API
+# não subir por causa de um nome que ninguém consulta. A alternativa — um
+# loop com `EXECUTE format(...)` descobrindo os nomes em tempo de execução —
+# é SQL dinâmico sem supervisão rodando uma vez contra produção; não vale a
+# pena pra um detalhe cosmético. Se um dia importar, isso pede um bloco
+# `DO` novo e guardado, não um ajuste aqui.
+#
 # Só dispara uma vez contra produção: no instante em que rodar,
 # to_regclass('public.leituras') deixa de ser NULL pra sempre e o bloco vira
 # no-op — não dá pra "consertar depois" com uma segunda passada deste mesmo
