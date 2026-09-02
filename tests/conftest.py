@@ -1,4 +1,21 @@
-"""Fixtures compartilhadas dos testes de API."""
+"""Fixtures compartilhadas dos testes de API.
+
+NÃO rode duas suítes ao mesmo tempo contra a mesma branch do Neon. Os testes
+de `test_db.py` dropam e recriam `leituras`/`medicoes`/`previsoes` de
+propósito (é o único jeito de testar a migração de rename), então duas
+execuções simultâneas se atropelam e falham com `UndefinedTable` em pontos
+aleatórios — parecem bug do código, mas são corrida entre processos.
+
+Pelo mesmo motivo, uma execução MORTA no meio (Ctrl+C num teste que já
+dropou, processo derrubado) deixa o banco de teste sem alguma tabela: o
+teardown de `test_db.py` não roda em processo morto. Para consertar:
+
+    python -c "import sys; sys.path.insert(0,'.'); \
+from dotenv import load_dotenv; load_dotenv('.env'); \
+import os; from api import db; \
+p=db.criar_pool(os.environ['DATABASE_URL_TEST']); p.open(); \
+db.criar_schema(p); p.close()"
+"""
 import os
 
 import pytest
