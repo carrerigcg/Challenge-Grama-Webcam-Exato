@@ -1,4 +1,15 @@
 """Testes dos endpoints da API."""
+from email.message import Message
+
+
+def _nome_do_content_disposition(valor: str) -> str | None:
+    # `email.message.Message` é o parser de header RFC 2231/6266 da stdlib
+    # (substituto do `cgi.parse_header`, removido no 3.13) — usado aqui pra
+    # provar que um cliente HTTP de verdade, não só uma comparação de string
+    # crua, recupera o nome do arquivo do header.
+    msg = Message()
+    msg["content-disposition"] = valor
+    return msg.get_filename()
 
 
 def _payload(regiao="mato do matheus", altura=5.2, risco="MEDIA", **extras):
@@ -445,3 +456,111 @@ def test_post_previsao_nome_no_limite_exato_de_200_e_aceito(client, headers_escr
     r = client.post("/previsoes", files=_upload(nome=nome), headers=headers_escrita)
     assert r.status_code == 201
     assert r.json()["nome_arquivo"] == nome
+
+
+# --- GET /previsoes ----------------------------------------------------------
+def test_get_previsao_devolve_a_mais_recente(client, headers_escrita, headers_leitura):
+    client.post(
+        "/previsoes",
+        files=_upload(nome="antiga.xlsx", conteudo=b"PK\x03\x04 velha"),
+        headers=headers_escrita,
+    )
+    client.post(
+        "/previsoes",
+        files=_upload(nome="nova.xlsx", conteudo=b"PK\x03\x04 nova"),
+        headers=headers_escrita,
+    )
+    r = client.get("/previsoes", headers=headers_leitura)
+    assert r.status_code == 200
+    assert r.content == b"PK\x03\x04 nova"
+
+
+def test_get_previsao_vem_como_download_de_xlsx(
+    client, headers_escrita, headers_leitura
+):
+    """O app salva o arquivo direto: precisa do content-type e do nome certos."""
+    client.post("/previsoes", files=_upload(), headers=headers_escrita)
+    r = client.get("/previsoes", headers=headers_leitura)
+    assert r.headers["content-type"] == XLSX
+    assert r.headers["content-disposition"] == 'attachment; filename="previsao.xlsx"'
+
+
+def test_get_previsao_por_id(client, headers_escrita, headers_leitura):
+    antiga = client.post(
+        "/previsoes",
+        files=_upload(nome="antiga.xlsx", conteudo=b"PK\x03\x04 velha"),
+        headers=headers_escrita,
+    ).json()
+    client.post(
+        "/previsoes",
+        files=_upload(nome="nova.xlsx", conteudo=b"PK\x03\x04 nova"),
+        headers=headers_escrita,
+    )
+    r = client.get("/previsoes", params={"id": antiga["id"]}, headers=headers_leitura)
+    assert r.status_code == 200
+    assert r.content == b"PK\x03\x04 velha"
+
+
+def test_get_previsao_com_id_inexistente_retorna_404(client, headers_leitura):
+    r = client.get("/previsoes", params={"id": 9999}, headers=headers_leitura)
+    assert r.status_code == 404
+
+
+def test_get_previsao_sem_nenhuma_cadastrada_retorna_404(client, headers_leitura):
+    r = client.get("/previsoes", headers=headers_leitura)
+    assert r.status_code == 404
+
+
+def test_get_previsao_sem_chave_e_negado(client):
+    r = client.get("/previsoes")
+    assert r.status_code == 401
+
+
+def test_get_previsao_com_espaco_no_nome_tem_disposition_bem_formado(
+    client, headers_escrita, headers_leitura
+):
+    """Espaço é um caractere legal em nome de arquivo — é exatamente o caso
+    que um Content-Disposition sem aspas formataria errado (o cliente HTTP
+    cortaria o nome no espaço)."""
+    client.post(
+        "/previsoes",
+        files=_upload(nome="previsao semanal.xlsx"),
+        headers=headers_escrita,
+    )
+    r = client.get("/previsoes", headers=headers_leitura)
+    assert r.status_code == 200
+    assert r.headers["content-disposition"] == (
+        'attachment; filename="previsao semanal.xlsx"'
+    )
+    # Prova que um parser real (não só uma comparação de string crua)
+    # recupera o nome inteiro, espaço incluso.
+    assert _nome_do_content_disposition(r.headers["content-disposition"]) == (
+        "previsao semanal.xlsx"
+    )
+
+
+def test_get_previsao_com_id_inexistente_nao_deixa_resposta_parcial(
+    client, headers_leitura
+):
+    """O 404 tem que ser um erro JSON de verdade, não bytes vazios com
+    status 404 — prova que nada do caminho do blob vazou pra fora."""
+    r = client.get("/previsoes", params={"id": 9999}, headers=headers_leitura)
+    assert r.status_code == 404
+    assert r.headers["content-type"].startswith("application/json")
+    assert r.json() == {"detail": "Nenhuma previsão encontrada"}
+
+
+def test_get_previsao_devolve_bytes_exatos_sem_reencodar(
+    client, headers_escrita, headers_leitura
+):
+    """NUL e byte acima de 0x7F: se algo no caminho de volta tentasse
+    tratar o blob como texto (decode/encode), um desses dois já quebraria."""
+    conteudo = b"PK\x03\x04\x00\xff\xfe"
+    client.post(
+        "/previsoes",
+        files=_upload(nome="binario.xlsx", conteudo=conteudo),
+        headers=headers_escrita,
+    )
+    r = client.get("/previsoes", headers=headers_leitura)
+    assert r.status_code == 200
+    assert r.content == conteudo

@@ -8,7 +8,16 @@ from datetime import datetime
 from enum import Enum
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
@@ -328,3 +337,30 @@ def criar_previsao(request: Request, arquivo: UploadFile = File(...)):
             (nome, conteudo),
         ).fetchone()
     return row
+
+
+@app.get("/previsoes", dependencies=[Depends(requer_leitura)])
+def baixar_previsao(request: Request, id: int | None = None):
+    """Devolve a previsão mais recente, ou a de `id` se pedido.
+
+    Sem `response_model`: a resposta são os bytes do arquivo, não JSON.
+    """
+    sql = "SELECT nome_arquivo, conteudo FROM previsoes"
+    params: list = []
+    if id is not None:
+        sql += " WHERE id = %s"
+        params.append(id)
+    # O desempate por id importa: dois uploads na mesma transação compartilham
+    # o `now()`, e sem ele a "mais recente" viraria sorteio.
+    sql += " ORDER BY criado_em DESC, id DESC LIMIT 1"
+    with request.app.state.pool.connection() as conn:
+        row = conn.execute(sql, params).fetchone()
+    if row is None:
+        raise HTTPException(404, "Nenhuma previsão encontrada")
+
+    nome = row["nome_arquivo"]
+    return Response(
+        content=bytes(row["conteudo"]),
+        media_type=MIME_XLSX,
+        headers={"Content-Disposition": f'attachment; filename="{nome}"'},
+    )
