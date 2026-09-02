@@ -64,7 +64,7 @@ class NivelRisco(str, Enum):
     ALTA = "ALTA"
 
 
-class MedicaoIn(BaseModel):
+class LeituraIn(BaseModel):
     # Sem default: cada estação precisa se identificar, senão leituras de
     # locais diferentes colidem numa região só.
     regiao: str = Field(min_length=1)
@@ -77,7 +77,7 @@ class MedicaoIn(BaseModel):
     clima: str | None = None
 
 
-class MedicaoOut(BaseModel):
+class LeituraOut(BaseModel):
     id: int
     regiao: str
     altura_cm: float
@@ -93,12 +93,21 @@ def raiz():
     return {"status": "ok", "mensagem": "API no ar"}
 
 
+# O segundo decorador mantém /medicoes vivo para as estações que ainda não
+# foram atualizadas. `include_in_schema=False` esconde da documentação para
+# ninguém novo passar a depender dele. Remover quando o campo estiver atualizado.
 @app.post(
-    "/medicoes",
-    response_model=MedicaoOut,
+    "/leituras",
+    response_model=LeituraOut,
     dependencies=[Depends(requer_escrita)],
 )
-def criar_medicao(medicao: MedicaoIn, request: Request):
+@app.post(
+    "/medicoes",
+    response_model=LeituraOut,
+    dependencies=[Depends(requer_escrita)],
+    include_in_schema=False,
+)
+def criar_leitura(leitura: LeituraIn, request: Request):
     with request.app.state.pool.connection() as conn:
         row = conn.execute(
             """
@@ -108,22 +117,28 @@ def criar_medicao(medicao: MedicaoIn, request: Request):
             RETURNING *
             """,
             (
-                medicao.regiao,
-                medicao.altura_cm,
-                medicao.nivel_risco.value,
-                medicao.temperatura_c,
-                medicao.clima,
+                leitura.regiao,
+                leitura.altura_cm,
+                leitura.nivel_risco.value,
+                leitura.temperatura_c,
+                leitura.clima,
             ),
         ).fetchone()
     return row
 
 
 @app.get(
-    "/medicoes",
-    response_model=list[MedicaoOut],
+    "/leituras",
+    response_model=list[LeituraOut],
     dependencies=[Depends(requer_leitura)],
 )
-def listar_medicoes(
+@app.get(
+    "/medicoes",
+    response_model=list[LeituraOut],
+    dependencies=[Depends(requer_leitura)],
+    include_in_schema=False,
+)
+def listar_leituras(
     request: Request,
     regiao: str | None = None,
     limit: int = Query(100, ge=1, le=1000),
@@ -140,15 +155,21 @@ def listar_medicoes(
 
 
 @app.get(
-    "/medicoes/{medicao_id}",
-    response_model=MedicaoOut,
+    "/leituras/{leitura_id}",
+    response_model=LeituraOut,
     dependencies=[Depends(requer_leitura)],
 )
-def buscar_medicao(medicao_id: int, request: Request):
+@app.get(
+    "/medicoes/{leitura_id}",
+    response_model=LeituraOut,
+    dependencies=[Depends(requer_leitura)],
+    include_in_schema=False,
+)
+def buscar_leitura(leitura_id: int, request: Request):
     with request.app.state.pool.connection() as conn:
         row = conn.execute(
-            "SELECT * FROM leituras WHERE id = %s", (medicao_id,)
+            "SELECT * FROM leituras WHERE id = %s", (leitura_id,)
         ).fetchone()
     if row is None:
-        raise HTTPException(404, "Medição não encontrada")
+        raise HTTPException(404, "Leitura não encontrada")
     return row
