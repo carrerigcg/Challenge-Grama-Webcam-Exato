@@ -214,6 +214,10 @@ def test_aliases_ficam_fora_da_documentacao(client):
 # --- POST /previsoes ---------------------------------------------------------
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
+# Mesmo número de api/main.py (TAMANHO_MAX_PREVISAO). Duplicado de propósito:
+# o teste tem que travar se o valor do código de produção mudar sem querer.
+TAMANHO_MAX_PREVISAO = 10 * 1024 * 1024
+
 # Um .xlsx é um zip: começa com "PK\x03\x04". A API não abre a planilha, só
 # guarda os bytes, então um zip de mentira serve e mantém o teste rápido.
 CONTEUDO = b"PK\x03\x04 planilha de mentira"
@@ -221,6 +225,14 @@ CONTEUDO = b"PK\x03\x04 planilha de mentira"
 
 def _upload(nome="previsao.xlsx", conteudo=CONTEUDO):
     return {"arquivo": (nome, conteudo, XLSX)}
+
+
+def _contar_previsoes(client) -> int:
+    """Prova direta no banco de que nada foi gravado — não basta confiar no
+    status HTTP quando o que se quer garantir é a ausência de efeito
+    colateral."""
+    with client.app.state.pool.connection() as conn:
+        return conn.execute("SELECT count(*) AS n FROM previsoes").fetchone()["n"]
 
 
 def test_post_previsao_grava_e_devolve_metadado(client, headers_escrita):
@@ -251,10 +263,25 @@ def test_post_previsao_rejeita_arquivo_grande_demais(client, headers_escrita):
     """Teto de 10 MB: o Neon free tem 0,5 GB e é o banco inteiro do projeto."""
     r = client.post(
         "/previsoes",
-        files=_upload(conteudo=b"x" * (10 * 1024 * 1024 + 1)),
+        files=_upload(conteudo=b"x" * (TAMANHO_MAX_PREVISAO + 1)),
         headers=headers_escrita,
     )
     assert r.status_code == 413
+
+
+def test_post_previsao_no_teto_exato_de_10mb_e_aceito(client, headers_escrita):
+    """Fronteira de cima: exatamente 10 MB tem que passar — prova que o
+    código usa ">" e não ">=". Também é o teste de regressão da margem do
+    middleware de Content-Length (api/main.py, MARGEM_MULTIPART_BYTES): se
+    a margem for pequena demais pro overhead do multipart, este upload
+    LEGÍTIMO seria barrado com o 413 errado antes mesmo de chegar aqui."""
+    r = client.post(
+        "/previsoes",
+        files=_upload(conteudo=b"x" * TAMANHO_MAX_PREVISAO),
+        headers=headers_escrita,
+    )
+    assert r.status_code == 201
+    assert r.json()["tamanho_bytes"] == TAMANHO_MAX_PREVISAO
 
 
 def test_post_previsao_descarta_caminho_no_nome(client, headers_escrita):
@@ -278,31 +305,68 @@ def test_post_previsao_sem_chave_e_negado(client):
     assert r.status_code == 401
 
 
+# --- Content-Length gigante: rejeitado pelo middleware, antes do parsing ----
+def test_post_previsao_content_length_gigante_e_rejeitado_antes_do_parsing(
+    client, headers_escrita
+):
+    """O Starlette (formparsers.py) só limita o tamanho de campos de forms
+    comuns (max_part_size); partes de ARQUIVO não têm teto nenhum ali — o
+    corpo inteiro é recebido e vira um SpooledTemporaryFile que vaza pra
+    disco depois de 1 MB, antes mesmo do handler começar a rodar. Por isso
+    api/main.py tem um middleware que olha o header Content-Length antes do
+    corpo ser lido. Este teste manda um corpo pequeno de propósito — o que
+    prova a rejeição antecipada é o header mentiroso, não o tamanho real
+    transmitido; se o middleware estivesse esperando o corpo chegar, isto
+    daria erro de parsing, não 413."""
+    headers = {
+        **headers_escrita,
+        "Content-Type": "multipart/form-data; boundary=x",
+        "content-length": str(500 * 1024 * 1024),
+    }
+    r = client.post(
+        "/previsoes", content=b"corpo pequeno de proposito", headers=headers
+    )
+    assert r.status_code == 413
+    assert _contar_previsoes(client) == 0
+
+
+# --- Caracteres proibidos no nome: protegem o Content-Disposition da Task 6 -
 # O nome vai parar num header Content-Disposition no GET (Task 6): CR/LF
-# injeta cabeçalho, aspas corrompem o valor, e um nome absurdo estoura
-# limites de header. Task 5 recusa tudo isso antes de gravar.
+# injeta cabeçalho, aspas e barra invertida corrompem um quoted-string HTTP
+# (RFC 6266/7230 — "\" é o caractere de escape ali), e um nome absurdo
+# estoura limites de header. Task 5 recusa tudo isso antes de gravar.
 #
-# `_upload()` (via `files=` do httpx) não serve para estes três testes: o
-# httpx sanitiza defensivamente o filename do multipart, convertendo
-# caracteres de controle e aspas em percent-encoding (`\n` -> "%0A") antes
-# de enviar — o servidor nunca veria o byte cru. Um cliente HTTP arbitrário
-# não tem essa cortesia, então o corpo multipart é montado à mão aqui para
-# entregar o byte malicioso de verdade e exercitar a validação do servidor.
+# `_upload()` (via `files=` do httpx) não serve para estes testes: o httpx
+# sanitiza defensivamente o filename do multipart, convertendo caracteres de
+# controle e aspas em percent-encoding (`\n` -> "%0A") antes de enviar — o
+# servidor nunca veria o byte cru. Um cliente HTTP arbitrário não tem essa
+# cortesia, então o corpo multipart é montado à mão aqui para entregar o
+# byte malicioso de verdade e exercitar a validação do servidor.
+_BOUNDARY_TESTE = "boundary-teste-previsao"
+
+
 def _upload_raw(nome_cru: str) -> bytes:
-    boundary = "boundary-teste-previsao"
+    # latin-1 mapeia cada byte 0-255 pro seu code point (round-trip exato) —
+    # é o jeito de colocar um byte cru arbitrário num f-string sem que o
+    # Python tente decodificar/recodificar nada. `surrogateescape` é só uma
+    # defesa a mais para o caso de um dia um teste passar um code point
+    # acima de 0x7F: nenhum dos payloads atuais (\n, \r, ", \) chega perto
+    # disso, então o parâmetro fica inerte por enquanto.
     corpo = (
-        f"--{boundary}\r\n"
+        f"--{_BOUNDARY_TESTE}\r\n"
         f'Content-Disposition: form-data; name="arquivo"; filename="{nome_cru}"\r\n'
         f"Content-Type: {XLSX}\r\n\r\n"
     ).encode("latin-1", errors="surrogateescape") + CONTEUDO + (
-        f"\r\n--{boundary}--\r\n"
+        f"\r\n--{_BOUNDARY_TESTE}--\r\n"
     ).encode("latin-1")
     return corpo
 
 
 def _headers_multipart_cru(headers_escrita):
-    boundary = "boundary-teste-previsao"
-    return {**headers_escrita, "Content-Type": f"multipart/form-data; boundary={boundary}"}
+    return {
+        **headers_escrita,
+        "Content-Type": f"multipart/form-data; boundary={_BOUNDARY_TESTE}",
+    }
 
 
 def test_post_previsao_rejeita_nome_com_newline(client, headers_escrita):
@@ -312,6 +376,7 @@ def test_post_previsao_rejeita_nome_com_newline(client, headers_escrita):
         headers=_headers_multipart_cru(headers_escrita),
     )
     assert r.status_code == 400
+    assert _contar_previsoes(client) == 0
 
 
 def test_post_previsao_rejeita_nome_com_carriage_return(client, headers_escrita):
@@ -325,6 +390,7 @@ def test_post_previsao_rejeita_nome_com_carriage_return(client, headers_escrita)
         headers=_headers_multipart_cru(headers_escrita),
     )
     assert r.status_code == 400
+    assert _contar_previsoes(client) == 0
 
 
 def test_post_previsao_rejeita_nome_com_aspas(client, headers_escrita):
@@ -334,6 +400,39 @@ def test_post_previsao_rejeita_nome_com_aspas(client, headers_escrita):
         headers=_headers_multipart_cru(headers_escrita),
     )
     assert r.status_code == 400
+    assert _contar_previsoes(client) == 0
+
+
+def test_post_previsao_barra_invertida_no_nome(client, headers_escrita):
+    """"\\" está na lista de caracteres proibidos (api/main.py) porque é o
+    caractere de escape dentro de um quoted-string HTTP — um nome terminado
+    em "\\" quebraria uma formatação ingênua do Content-Disposition da
+    Task 6 mesmo sem conter aspas.
+
+    ACHADO ao escrever este teste (rodando em Windows, onde `os.path` é
+    `ntpath`): `os.path.basename()`, chamado ANTES da checagem explícita de
+    caracteres, já trata "\\" como separador de caminho e corta tudo até o
+    último "\\" — então este payload chega em `criar_previsao` como
+    ".xlsx", sem barra nenhuma, e a checagem nova nunca roda pra este caso
+    específico. Em produção (Render, Linux) `os.path` é `posixpath`, que
+    NÃO trata "\\" como separador: lá a barra sobrevive ao basename e é a
+    checagem explícita — não o basename — que barra o upload com 400. A
+    garantia que interessa (o nome gravado nunca carrega "\\") vale nas
+    duas plataformas, só que por mecanismos diferentes; este teste aceita
+    os dois desfechos e checa a garantia real em cada um, em vez de fixar
+    um status_code que já se provou dependente de SO.
+    """
+    r = client.post(
+        "/previsoes",
+        content=_upload_raw("previsao\\.xlsx"),
+        headers=_headers_multipart_cru(headers_escrita),
+    )
+    assert r.status_code in (201, 400)
+    if r.status_code == 201:
+        assert "\\" not in r.json()["nome_arquivo"]
+        assert _contar_previsoes(client) == 1
+    else:
+        assert _contar_previsoes(client) == 0
 
 
 def test_post_previsao_rejeita_nome_longo_demais(client, headers_escrita):
@@ -342,3 +441,13 @@ def test_post_previsao_rejeita_nome_longo_demais(client, headers_escrita):
         "/previsoes", files=_upload(nome=nome), headers=headers_escrita
     )
     assert r.status_code == 400
+
+
+def test_post_previsao_nome_no_limite_exato_de_200_e_aceito(client, headers_escrita):
+    """Fronteira de cima do nome: exatamente 200 caracteres tem que passar —
+    prova que o código usa ">" e não ">=" aqui também."""
+    nome = "a" * 195 + ".xlsx"  # exatamente 200 caracteres
+    assert len(nome) == 200
+    r = client.post("/previsoes", files=_upload(nome=nome), headers=headers_escrita)
+    assert r.status_code == 201
+    assert r.json()["nome_arquivo"] == nome

@@ -9,6 +9,7 @@ from enum import Enum
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
@@ -213,7 +214,51 @@ def buscar_leitura(leitura_id: int, request: Request):
 # Este número TEM que ser o mesmo da constraint previsoes_conteudo_ate_10mb
 # em api/db.py — ver o comentário lá.
 TAMANHO_MAX_PREVISAO = 10 * 1024 * 1024
+# Usado no GET de download (Task 6), pra devolver o Content-Type certo da
+# planilha — não usado ainda nesta rota de upload.
 MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+# Overhead da framing do multipart (linha de boundary, headers de cada parte,
+# boundary final) por cima do arquivo em si — medido empiricamente em ~230
+# bytes pra um upload de um arquivo só. NÃO é folga do limite de negócio:
+# é só a diferença entre "tamanho do arquivo" e "tamanho do corpo HTTP que
+# carrega o arquivo". Sem essa margem, um upload de exatamente 10 MB seria
+# barrado aqui com o erro errado (413 por causa da framing, não do conteúdo).
+MARGEM_MULTIPART_BYTES = 4096
+
+
+@app.middleware("http")
+async def rejeitar_previsao_grande_por_content_length(request: Request, call_next):
+    # Reordenar os checks de tamanho pra dentro do handler não adianta: pelo
+    # tempo em que `criar_previsao` começa a rodar, o Starlette já recebeu e
+    # fez parse do multipart inteiro pra resolver o parâmetro `UploadFile` —
+    # partes de arquivo não têm teto de tamanho no parser (só campos de
+    # formulário comuns têm, via `max_part_size`), e o SpooledTemporaryFile
+    # que recebe os bytes já vaza pra disco depois de 1 MB. Um corpo de
+    # 500 MB já foi lido e gravado em disco antes do handler ver uma linha
+    # de código. Rejeitar aqui, olhando só o header Content-Length ANTES do
+    # router (e portanto antes do parser) processar o corpo, evita isso.
+    #
+    # Só se aplica a POST /previsoes — não é um teto global pra toda rota.
+    #
+    # O que isto NÃO cobre: uma requisição sem Content-Length (por exemplo
+    # Transfer-Encoding: chunked) passa direto por aqui sem checagem — quem
+    # barra esse caso é o teto de tamanho de `criar_previsao`, só que depois
+    # do corpo inteiro já ter sido lido. Este middleware é uma rejeição
+    # antecipada de casos óbvios via header, não a fonte de verdade do
+    # limite — essa continua sendo o check dentro do handler.
+    if request.method == "POST" and request.url.path == "/previsoes":
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                declarado = int(content_length)
+            except ValueError:
+                declarado = None
+            if declarado is not None and declarado > TAMANHO_MAX_PREVISAO + MARGEM_MULTIPART_BYTES:
+                return JSONResponse(
+                    status_code=413, content={"detail": "Arquivo acima de 10 MB"}
+                )
+    return await call_next(request)
 
 
 class PrevisaoOut(BaseModel):
@@ -236,12 +281,19 @@ def criar_previsao(request: Request, arquivo: UploadFile = File(...)):
     if not nome.lower().endswith(".xlsx"):
         raise HTTPException(400, "O arquivo precisa ser .xlsx")
     # O nome vem do cliente e vai parar num header Content-Disposition no GET.
-    # CR/LF ali dentro é injeção de header; aspas e caracteres de controle
-    # corrompem o valor; um nome absurdamente longo também quebra. Recusa
-    # antes de guardar — o banco não tem como desfazer isso depois.
+    # CR/LF ali dentro é injeção de header; aspas corrompem o valor; barra
+    # invertida é o caractere de escape dentro de um quoted-string HTTP
+    # (RFC 6266/7230) — um nome terminado em "\" quebraria uma formatação
+    # ingênua tipo f'filename="{nome}"' mesmo sem conter aspas; um nome
+    # absurdamente longo também estoura limites de header. Recusa antes de
+    # guardar — o banco não tem como desfazer isso depois.
     if len(nome) > 200:
         raise HTTPException(400, "Nome de arquivo longo demais")
-    if '"' in nome or any(ord(c) < 32 or ord(c) == 127 for c in nome):
+    if (
+        '"' in nome
+        or "\\" in nome
+        or any(ord(c) < 32 or ord(c) == 127 for c in nome)
+    ):
         raise HTTPException(400, "Nome de arquivo inválido")
 
     conteudo = arquivo.file.read()
