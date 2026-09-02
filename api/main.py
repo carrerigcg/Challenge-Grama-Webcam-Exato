@@ -222,9 +222,19 @@ def buscar_leitura(leitura_id: int, request: Request):
 # uma planilha de previsão tem alguns KB, então 10 MB já é folga larga.
 # Este número TEM que ser o mesmo da constraint previsoes_conteudo_ate_10mb
 # em api/db.py — ver o comentário lá.
+#
+# Limite de memória conhecido, não descuido: `criar_previsao` e
+# `baixar_previsao` são `def` síncronos, então o FastAPI roda cada um numa
+# thread do threadpool do Starlette, com o limitador padrão do anyio de 40
+# tokens. Pior caso: 40 downloads simultâneos × 10 MB ≈ 400 MB só de blob,
+# numa instância de 512 MB (o free tier do Render), antes do uso de base do
+# processo. Aceitável hoje porque o tráfego real é um consumidor externo
+# fazendo polling ocasional, não 40 clientes concorrentes. Se o tráfego
+# crescer, a solução é fazer streaming do bytea do psycopg em vez de carregar
+# o blob inteiro em memória por request — isso é máquina de verdade, não vale
+# a pena antes de precisar.
 TAMANHO_MAX_PREVISAO = 10 * 1024 * 1024
-# Usado no GET de download (Task 6), pra devolver o Content-Type certo da
-# planilha — não usado ainda nesta rota de upload.
+# Content-Type da planilha, usado no GET de download (`baixar_previsao`).
 MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 # Overhead da framing do multipart (linha de boundary, headers de cada parte,
@@ -320,6 +330,20 @@ def criar_previsao(request: Request, arquivo: UploadFile = File(...)):
         or any(ord(c) < 32 or ord(c) == 127 for c in nome)
     ):
         raise HTTPException(400, "Nome de arquivo inválido")
+    # `nome` acaba num valor de header HTTP (Content-Disposition, no GET) e
+    # headers HTTP são Latin-1 no fio: é o que RFC 7230 exige e o que o
+    # Starlette assume — `Response.init_headers` faz `v.encode("latin-1")`
+    # sem fallback, e um caractere fora da tabela vira UnicodeEncodeError não
+    # tratado (500), não um 4xx. Isto ainda aceita acento português (a grafia
+    # real dos nomes usados aqui) porque está dentro de Latin-1; só barra o
+    # que a tabela não cobre, como CJK ou emoji. Se um dia precisar de nome
+    # com Unicode arbitrário, o jeito completo é RFC 6266
+    # (`filename*=UTF-8''…` com fallback ASCII em `filename=`), mas isso é
+    # mais máquina do que o caso de uso atual pede.
+    try:
+        nome.encode("latin-1")
+    except UnicodeEncodeError:
+        raise HTTPException(400, "Nome de arquivo deve usar apenas caracteres Latin-1")
 
     conteudo = arquivo.file.read()
     if not conteudo:
@@ -345,7 +369,9 @@ def baixar_previsao(request: Request, id: int | None = None):
 
     Sem `response_model`: a resposta são os bytes do arquivo, não JSON.
     """
-    sql = "SELECT nome_arquivo, conteudo FROM previsoes"
+    # `id` também vem no SELECT: precisa dele pra montar um nome de fallback
+    # (ver abaixo) sem outra ida ao banco.
+    sql = "SELECT id, nome_arquivo, conteudo FROM previsoes"
     params: list = []
     if id is not None:
         sql += " WHERE id = %s"
@@ -359,7 +385,25 @@ def baixar_previsao(request: Request, id: int | None = None):
         raise HTTPException(404, "Nenhuma previsão encontrada")
 
     nome = row["nome_arquivo"]
+    # `criar_previsao` garante Latin-1 em nomes que entram pela API — mas
+    # essa validação não protege linhas gravadas por outra coisa (scripts/
+    # grava direto no banco). Content-Disposition é um header, e o Starlette
+    # codifica o valor em Latin-1 sem fallback (`Response.init_headers`):
+    # um nome fora da tabela vira UnicodeEncodeError não tratado, ou seja
+    # 500 pra todo mundo que peça a previsão mais recente até alguém subir
+    # um arquivo novo ou apagar a linha na mão. Isto é inalcançável pela API
+    # por design — não é código morto, é o mesmo raciocínio das constraints
+    # de `conteudo` em api/db.py, aplicado ao nome: a API valida na entrada,
+    # o servidor não confia cegamente nisso na saída.
+    try:
+        nome.encode("latin-1")
+    except UnicodeEncodeError:
+        nome = f"previsao-{row['id']}.xlsx"
     return Response(
+        # `bytes(...)` não é decorativo por acaso: hoje o psycopg com
+        # `dict_row` já devolve `bytes` pra bytea, então isto é um no-op —
+        # mas é a defesa barata contra um driver (ou config futura) que
+        # devolvesse `memoryview`, que o Starlette não aceita como body.
         content=bytes(row["conteudo"]),
         media_type=MIME_XLSX,
         headers={"Content-Disposition": f'attachment; filename="{nome}"'},

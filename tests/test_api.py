@@ -564,3 +564,52 @@ def test_get_previsao_devolve_bytes_exatos_sem_reencodar(
     r = client.get("/previsoes", headers=headers_leitura)
     assert r.status_code == 200
     assert r.content == conteudo
+
+
+# --- Nomes fora de Latin-1 -----------------------------------------------------
+# Content-Disposition é um header HTTP: Starlette codifica o valor em Latin-1
+# na saída (`starlette/responses.py`), e levanta UnicodeEncodeError — não faz
+# fallback nem escapa — pra qualquer caractere fora da tabela. CJK e emoji
+# são exemplos comuns disso; acento português (ex.: "previsão.xlsx") está
+# dentro de Latin-1 e continua aceito.
+def test_post_previsao_rejeita_nome_com_caractere_cjk(client, headers_escrita):
+    r = client.post(
+        "/previsoes", files=_upload(nome="相談.xlsx"), headers=headers_escrita
+    )
+    assert r.status_code == 400
+
+
+def test_post_previsao_rejeita_nome_com_emoji(client, headers_escrita):
+    r = client.post(
+        "/previsoes", files=_upload(nome="previsao🌱.xlsx"), headers=headers_escrita
+    )
+    assert r.status_code == 400
+
+
+def test_get_previsao_com_nome_fora_de_latin1_inserido_direto_no_banco(
+    client, headers_leitura
+):
+    """A validação do POST não protege linhas escritas por outra coisa que
+    não a API — `scripts/` grava direto no banco. Simula isso inserindo via
+    pool (como `tests/conftest.py` já faz noutros testes) e prova que o GET
+    ainda serve o arquivo, com um nome de fallback seguro no header, em vez
+    de estourar 500."""
+    conteudo = b"PK\x03\x04 direto no banco"
+    with client.app.state.pool.connection() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO previsoes (nome_arquivo, conteudo)
+            VALUES (%s, %s)
+            RETURNING id
+            """,
+            ("previsao🌱.xlsx", conteudo),
+        ).fetchone()
+    previsao_id = row["id"]
+
+    r = client.get(
+        "/previsoes", params={"id": previsao_id}, headers=headers_leitura
+    )
+    assert r.status_code == 200
+    assert r.content == conteudo
+    nome = _nome_do_content_disposition(r.headers["content-disposition"])
+    assert nome == f"previsao-{previsao_id}.xlsx"
