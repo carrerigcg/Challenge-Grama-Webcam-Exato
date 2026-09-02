@@ -784,8 +784,10 @@ class _RespostaFake:
 def test_enviar_medicao_inclui_regiao_do_env(monkeypatch):
     """Cada estação se identifica, senão medições de locais diferentes colidem."""
     enviados = {}
+    chamada = {}
 
     def _fake_post(url, json, headers, timeout):
+        chamada["url"] = url
         enviados.update(json)
         return _RespostaFake()
 
@@ -795,6 +797,10 @@ def test_enviar_medicao_inclui_regiao_do_env(monkeypatch):
 
     medir_grama.enviar_medicao(5.2, "MÉDIA")
 
+    # URL é a única string em enviar_medicao cuja falha é muda: se o path
+    # estiver errado, a estação mede, tenta enviar e perde a leitura só com
+    # um AVISO no stderr — que ninguém lê numa Raspberry Pi na beira da estrada.
+    assert chamada["url"] == f"{medir_grama.API_URL}/leituras"
     assert enviados["regiao"] == "rodoanel norte"
     assert enviados["altura_cm"] == 5.2
     assert enviados["nivel_risco"] == "MEDIA"
