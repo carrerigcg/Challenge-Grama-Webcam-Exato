@@ -48,6 +48,12 @@ O índice `idx_medicoes_regiao_criado_em` acompanha o rename da tabela; o Postgr
 mantém funcionando com o nome antigo, então ele é renomeado explicitamente para
 `idx_leituras_regiao_criado_em`.
 
+**A ordem dentro de `criar_schema()` importa e não é negociável: o rename roda antes do
+`CREATE TABLE IF NOT EXISTS leituras`.** Na ordem inversa, o `CREATE` cria uma `leituras`
+vazia, o bloco de rename vê que ela já existe, desiste, e a `medicoes` de produção fica
+órfã com todo o histórico dentro enquanto a API grava na tabela nova. O sintoma seria um
+`GET /leituras` vazio em produção, sem erro nenhum no log.
+
 ### `GET /leituras/{id}` fica
 
 Já existe e é testado. O diagrama não mostra, mas apagar código que funciona não fazia
@@ -150,7 +156,10 @@ atual (auth, validação, filtro, limite, ordenação, 404) continua valendo.
 Cobertura nova:
 
 - `criar_schema` renomeia `medicoes` para `leituras` quando só a antiga existe;
+- o rename **preserva as linhas** — grava em `medicoes`, roda `criar_schema`, lê de
+  `leituras` e encontra o mesmo dado (é este teste que pega a inversão de ordem);
 - `criar_schema` é no-op quando `leituras` já existe (rodar duas vezes não quebra);
+- `criar_schema` cria `leituras` do zero num banco vazio, sem `medicoes` nenhuma;
 - os aliases `/medicoes` respondem igual às rotas novas;
 - `POST /previsoes` grava o arquivo e devolve o metadado;
 - `POST /previsoes` rejeita extensão errada, corpo vazio, arquivo acima de 10 MB, e
