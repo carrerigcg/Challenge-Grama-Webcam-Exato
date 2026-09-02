@@ -77,8 +77,10 @@ critérios de infra do projeto: 100% gratuito e sem lock-in.
 
 No Postgres, um valor grande já é comprimido e guardado fora da linha pelo TOAST
 automaticamente. Uma planilha de previsão tem poucos KB; os 0,5 GB do plano free do Neon
-seguram milhares. De quebra, `scripts/backup.py` passa a cobrir as planilhas sem
-trabalho extra.
+seguram milhares. As planilhas passam a caber no mesmo backup das leituras, mas isso
+**não** é de graça: `scripts/backup.py` exporta a tabela por nome, hard-coded, então
+ganha um passo que grava cada previsão como um `.xlsx` de verdade na pasta de backup —
+mais útil que enfiar bytea codificado num `INSERT`.
 
 ### Previsão não tem `regiao`
 
