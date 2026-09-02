@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import Enum
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
@@ -204,4 +204,59 @@ def buscar_leitura(leitura_id: int, request: Request):
         ).fetchone()
     if row is None:
         raise HTTPException(404, "Leitura não encontrada")
+    return row
+
+
+# --- Previsões ---------------------------------------------------------------
+# Teto de 10 MB. O Neon free tem 0,5 GB no total e é o banco inteiro do projeto;
+# uma planilha de previsão tem alguns KB, então 10 MB já é folga larga.
+# Este número TEM que ser o mesmo da constraint previsoes_conteudo_ate_10mb
+# em api/db.py — ver o comentário lá.
+TAMANHO_MAX_PREVISAO = 10 * 1024 * 1024
+MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+class PrevisaoOut(BaseModel):
+    id: int
+    nome_arquivo: str
+    tamanho_bytes: int
+    criado_em: datetime
+
+
+@app.post(
+    "/previsoes",
+    response_model=PrevisaoOut,
+    status_code=201,
+    dependencies=[Depends(requer_escrita)],
+)
+def criar_previsao(request: Request, arquivo: UploadFile = File(...)):
+    # `def` e não `async def`: o psycopg aqui é síncrono, e num handler async
+    # ele travaria o event loop. Sendo `def`, o FastAPI joga num threadpool.
+    nome = os.path.basename(arquivo.filename or "")
+    if not nome.lower().endswith(".xlsx"):
+        raise HTTPException(400, "O arquivo precisa ser .xlsx")
+    # O nome vem do cliente e vai parar num header Content-Disposition no GET.
+    # CR/LF ali dentro é injeção de header; aspas e caracteres de controle
+    # corrompem o valor; um nome absurdamente longo também quebra. Recusa
+    # antes de guardar — o banco não tem como desfazer isso depois.
+    if len(nome) > 200:
+        raise HTTPException(400, "Nome de arquivo longo demais")
+    if '"' in nome or any(ord(c) < 32 or ord(c) == 127 for c in nome):
+        raise HTTPException(400, "Nome de arquivo inválido")
+
+    conteudo = arquivo.file.read()
+    if not conteudo:
+        raise HTTPException(400, "Arquivo vazio")
+    if len(conteudo) > TAMANHO_MAX_PREVISAO:
+        raise HTTPException(413, "Arquivo acima de 10 MB")
+
+    with request.app.state.pool.connection() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO previsoes (nome_arquivo, conteudo)
+            VALUES (%s, %s)
+            RETURNING id, nome_arquivo, tamanho_bytes, criado_em
+            """,
+            (nome, conteudo),
+        ).fetchone()
     return row

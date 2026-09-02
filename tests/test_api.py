@@ -209,3 +209,136 @@ def test_aliases_ficam_fora_da_documentacao(client):
     caminhos = client.get("/openapi.json").json()["paths"]
     assert "/leituras" in caminhos
     assert "/medicoes" not in caminhos
+
+
+# --- POST /previsoes ---------------------------------------------------------
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+# Um .xlsx é um zip: começa com "PK\x03\x04". A API não abre a planilha, só
+# guarda os bytes, então um zip de mentira serve e mantém o teste rápido.
+CONTEUDO = b"PK\x03\x04 planilha de mentira"
+
+
+def _upload(nome="previsao.xlsx", conteudo=CONTEUDO):
+    return {"arquivo": (nome, conteudo, XLSX)}
+
+
+def test_post_previsao_grava_e_devolve_metadado(client, headers_escrita):
+    r = client.post("/previsoes", files=_upload(), headers=headers_escrita)
+    assert r.status_code == 201
+    corpo = r.json()
+    assert corpo["id"] == 1
+    assert corpo["nome_arquivo"] == "previsao.xlsx"
+    assert corpo["tamanho_bytes"] == len(CONTEUDO)
+    assert "conteudo" not in corpo, "não devolva o binário na resposta do POST"
+
+
+def test_post_previsao_rejeita_extensao_errada(client, headers_escrita):
+    r = client.post(
+        "/previsoes", files=_upload(nome="previsao.csv"), headers=headers_escrita
+    )
+    assert r.status_code == 400
+
+
+def test_post_previsao_rejeita_arquivo_vazio(client, headers_escrita):
+    r = client.post(
+        "/previsoes", files=_upload(conteudo=b""), headers=headers_escrita
+    )
+    assert r.status_code == 400
+
+
+def test_post_previsao_rejeita_arquivo_grande_demais(client, headers_escrita):
+    """Teto de 10 MB: o Neon free tem 0,5 GB e é o banco inteiro do projeto."""
+    r = client.post(
+        "/previsoes",
+        files=_upload(conteudo=b"x" * (10 * 1024 * 1024 + 1)),
+        headers=headers_escrita,
+    )
+    assert r.status_code == 413
+
+
+def test_post_previsao_descarta_caminho_no_nome(client, headers_escrita):
+    """Nome vem do cliente e vai parar num header HTTP — guarda só o basename."""
+    r = client.post(
+        "/previsoes",
+        files=_upload(nome="../../etc/previsao.xlsx"),
+        headers=headers_escrita,
+    )
+    assert r.status_code == 201
+    assert r.json()["nome_arquivo"] == "previsao.xlsx"
+
+
+def test_post_previsao_com_chave_de_leitura_e_negado(client, headers_leitura):
+    r = client.post("/previsoes", files=_upload(), headers=headers_leitura)
+    assert r.status_code == 401
+
+
+def test_post_previsao_sem_chave_e_negado(client):
+    r = client.post("/previsoes", files=_upload())
+    assert r.status_code == 401
+
+
+# O nome vai parar num header Content-Disposition no GET (Task 6): CR/LF
+# injeta cabeçalho, aspas corrompem o valor, e um nome absurdo estoura
+# limites de header. Task 5 recusa tudo isso antes de gravar.
+#
+# `_upload()` (via `files=` do httpx) não serve para estes três testes: o
+# httpx sanitiza defensivamente o filename do multipart, convertendo
+# caracteres de controle e aspas em percent-encoding (`\n` -> "%0A") antes
+# de enviar — o servidor nunca veria o byte cru. Um cliente HTTP arbitrário
+# não tem essa cortesia, então o corpo multipart é montado à mão aqui para
+# entregar o byte malicioso de verdade e exercitar a validação do servidor.
+def _upload_raw(nome_cru: str) -> bytes:
+    boundary = "boundary-teste-previsao"
+    corpo = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="arquivo"; filename="{nome_cru}"\r\n'
+        f"Content-Type: {XLSX}\r\n\r\n"
+    ).encode("latin-1", errors="surrogateescape") + CONTEUDO + (
+        f"\r\n--{boundary}--\r\n"
+    ).encode("latin-1")
+    return corpo
+
+
+def _headers_multipart_cru(headers_escrita):
+    boundary = "boundary-teste-previsao"
+    return {**headers_escrita, "Content-Type": f"multipart/form-data; boundary={boundary}"}
+
+
+def test_post_previsao_rejeita_nome_com_newline(client, headers_escrita):
+    r = client.post(
+        "/previsoes",
+        content=_upload_raw("previsao\n.xlsx"),
+        headers=_headers_multipart_cru(headers_escrita),
+    )
+    assert r.status_code == 400
+
+
+def test_post_previsao_rejeita_nome_com_carriage_return(client, headers_escrita):
+    # O \r sozinho quebra o parsing do multipart antes mesmo de chegar na
+    # validação do nome (python-multipart trata CR como fim de cabeçalho) —
+    # o 400 aqui vem do parser, não da checagem da rota. De qualquer forma
+    # nenhuma linha é gravada, que é a garantia que este teste protege.
+    r = client.post(
+        "/previsoes",
+        content=_upload_raw("previsao\r.xlsx"),
+        headers=_headers_multipart_cru(headers_escrita),
+    )
+    assert r.status_code == 400
+
+
+def test_post_previsao_rejeita_nome_com_aspas(client, headers_escrita):
+    r = client.post(
+        "/previsoes",
+        content=_upload_raw('previsao".xlsx'),
+        headers=_headers_multipart_cru(headers_escrita),
+    )
+    assert r.status_code == 400
+
+
+def test_post_previsao_rejeita_nome_longo_demais(client, headers_escrita):
+    nome = "a" * 197 + ".xlsx"  # 202 caracteres, acima do limite de 200
+    r = client.post(
+        "/previsoes", files=_upload(nome=nome), headers=headers_escrita
+    )
+    assert r.status_code == 400
