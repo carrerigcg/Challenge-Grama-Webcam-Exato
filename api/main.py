@@ -1,6 +1,7 @@
-"""API de medições de altura de grama."""
+"""API de leituras de altura de grama."""
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -38,6 +39,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="API Grama Webcam", lifespan=lifespan)
+logger = logging.getLogger(__name__)
 
 
 # --- Autenticação ------------------------------------------------------------
@@ -93,9 +95,27 @@ def raiz():
     return {"status": "ok", "mensagem": "API no ar"}
 
 
-# O segundo decorador mantém /medicoes vivo para as estações que ainda não
-# foram atualizadas. `include_in_schema=False` esconde da documentação para
-# ninguém novo passar a depender dele. Remover quando o campo estiver atualizado.
+# Aliases de compatibilidade (POST e os dois GET abaixo): /medicoes continua
+# respondendo ao lado de /leituras porque duas partes fora deste repo
+# dependem do nome antigo e nenhuma se atualiza sozinha — as estações em
+# campo (POST) e o consumidor externo (GET). `include_in_schema=False`
+# esconde da documentação pra ninguém novo passar a depender dele.
+#
+# Some quando (a) as estações em campo postarem em /leituras e (b) o
+# consumidor externo migrar os GETs — são duas partes independentes, as
+# duas fora deste repo. Não dá pra deduzir daqui: confirme com a equipe
+# antes de apagar. O aviso logado por `_avisar_uso_do_alias` é a evidência:
+# uma semana limpa de produção sem essa mensagem indica que as duas já
+# migraram.
+def _avisar_uso_do_alias(request: Request) -> None:
+    if request.url.path.startswith("/medicoes"):
+        logger.warning(
+            "Rota antiga em uso: %s %s (ver comentário de alias em api/main.py)",
+            request.method,
+            request.url.path,
+        )
+
+
 @app.post(
     "/leituras",
     response_model=LeituraOut,
@@ -108,6 +128,7 @@ def raiz():
     include_in_schema=False,
 )
 def criar_leitura(leitura: LeituraIn, request: Request):
+    _avisar_uso_do_alias(request)
     with request.app.state.pool.connection() as conn:
         row = conn.execute(
             """
@@ -127,6 +148,8 @@ def criar_leitura(leitura: LeituraIn, request: Request):
     return row
 
 
+# Alias de compatibilidade — motivo e critério de remoção no comentário
+# acima de POST /leituras.
 @app.get(
     "/leituras",
     response_model=list[LeituraOut],
@@ -143,6 +166,7 @@ def listar_leituras(
     regiao: str | None = None,
     limit: int = Query(100, ge=1, le=1000),
 ):
+    _avisar_uso_do_alias(request)
     sql = "SELECT * FROM leituras"
     params: list = []
     if regiao:
@@ -154,11 +178,18 @@ def listar_leituras(
         return conn.execute(sql, params).fetchall()
 
 
+# Alias de compatibilidade — motivo e critério de remoção no comentário
+# acima de POST /leituras.
 @app.get(
     "/leituras/{leitura_id}",
     response_model=LeituraOut,
     dependencies=[Depends(requer_leitura)],
 )
+# O path usa /medicoes (nome antigo) mas {leitura_id} (nome novo) de
+# propósito: o FastAPI casa parâmetros de path com a assinatura da função
+# pelo nome. Trocar por {medicao_id} "pra ficar consistente" não dá erro
+# nenhum — vira query param obrigatório e GET /medicoes/5 passa a
+# devolver 422 silenciosamente.
 @app.get(
     "/medicoes/{leitura_id}",
     response_model=LeituraOut,
@@ -166,6 +197,7 @@ def listar_leituras(
     include_in_schema=False,
 )
 def buscar_leitura(leitura_id: int, request: Request):
+    _avisar_uso_do_alias(request)
     with request.app.state.pool.connection() as conn:
         row = conn.execute(
             "SELECT * FROM leituras WHERE id = %s", (leitura_id,)

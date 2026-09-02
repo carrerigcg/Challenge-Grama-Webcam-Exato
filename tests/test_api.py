@@ -143,7 +143,7 @@ def test_get_criado_em_vem_em_iso8601(client, headers_escrita, headers_leitura):
 
 
 # --- GET /leituras/{id} ------------------------------------------------------
-def test_get_por_id_retorna_a_medicao(client, headers_escrita, headers_leitura):
+def test_get_por_id_retorna_a_leitura(client, headers_escrita, headers_leitura):
     novo = client.post(
         "/leituras", json=_payload(), headers=headers_escrita
     ).json()
@@ -165,9 +165,11 @@ def test_raiz_nao_exige_chave(client):
 
 
 # --- Aliases de compatibilidade ----------------------------------------------
-# As estações em campo (medir_grama.py) postam em /medicoes e não se atualizam
-# sozinhas. Sem estes aliases, o primeiro deploy derruba toda a captura até
-# alguém ir de máquina em máquina. Some quando as estações estiverem atualizadas.
+# /medicoes continua respondendo porque duas partes fora deste repo dependem
+# do nome antigo e nenhuma se atualiza sozinha: as estações em campo
+# (medir_grama.py, só POST) e o consumidor externo (só GET). Some quando as
+# duas migrarem — não dá pra confirmar isso pelo repo, ver comentário em
+# api/main.py acima de POST /leituras.
 def test_post_no_alias_medicoes_ainda_grava(client, headers_escrita):
     r = client.post("/medicoes", json=_payload(), headers=headers_escrita)
     assert r.status_code == 200
@@ -181,8 +183,24 @@ def test_get_no_alias_medicoes_ainda_le(client, headers_escrita, headers_leitura
     assert len(r.json()) == 1
 
 
+def test_get_por_id_no_alias_medicoes_ainda_funciona(
+    client, headers_escrita, headers_leitura
+):
+    """Rota do consumidor externo — ele só lê, e é quem ainda não migrou aqui."""
+    novo = client.post("/leituras", json=_payload(), headers=headers_escrita).json()
+    r = client.get(f"/medicoes/{novo['id']}", headers=headers_leitura)
+    assert r.status_code == 200
+    assert r.json()["id"] == novo["id"]
+
+
 def test_alias_medicoes_exige_chave(client):
     r = client.post("/medicoes", json=_payload())
+    assert r.status_code == 401
+
+
+def test_alias_medicoes_com_chave_de_leitura_nao_grava(client, headers_leitura):
+    """A duplicação do decorador é o risco: a alias não pode virar rota de escrita."""
+    r = client.post("/medicoes", json=_payload(), headers=headers_leitura)
     assert r.status_code == 401
 
 

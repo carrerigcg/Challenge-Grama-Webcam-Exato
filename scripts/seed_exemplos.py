@@ -1,7 +1,7 @@
 """Insere medições de exemplo no banco pra o consumidor externo testar GETs.
 
 One-shot. Backdateia criado_em pra formar uma série temporal de ~4 semanas,
-o que POST /medicoes não permite (aquele grava now() sempre).
+o que POST /leituras não permite (aquele grava now() sempre).
 """
 from __future__ import annotations
 
