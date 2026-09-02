@@ -20,6 +20,33 @@ def pool():
     p.close()
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _restaura_schema_no_fim_do_modulo():
+    """Rede de segurança: vários testes aqui dropam `leituras`/`medicoes` e
+    contam com a chamada a `criar_schema` mais adiante NO MESMO teste pra
+    devolver o estado normal. Se uma asserção ou o próprio `criar_schema`
+    levantar no meio do caminho, a tabela fica dropada — e, como o banco de
+    teste é compartilhado entre os testes (não há TRUNCATE por teste aqui),
+    isso viraria uma cascata de falhas escondendo a falha real, ou pior:
+    o stub de uma coluna só de `test_criar_schema_nao_mexe_se_as_duas_tabelas_existirem`
+    sobreviveria e seria renomeado pra `leituras` na PRÓXIMA execução, com o
+    `CREATE TABLE IF NOT EXISTS` recusando completar as colunas que faltam.
+    Roda uma vez, no fim do módulo, independente de sucesso ou falha.
+    """
+    yield
+    url = os.environ.get("DATABASE_URL_TEST")
+    if not url:
+        return
+    p = db.criar_pool(url)
+    p.open()
+    try:
+        with p.connection() as conn:
+            conn.execute("DROP TABLE IF EXISTS medicoes")
+        db.criar_schema(p)
+    finally:
+        p.close()
+
+
 def _criar_legado(pool):
     """Recria o estado antigo: tabela `medicoes` com índice e uma linha dentro."""
     with pool.connection() as conn:
@@ -73,11 +100,24 @@ def test_criar_schema_cria_do_zero_sem_tabela_antiga(pool):
 
 
 def test_criar_schema_e_idempotente(pool):
+    """`assert n >= 0` nunca falharia — o que prova idempotência de verdade é
+    a linha sobreviver: se a segunda chamada dropasse e recriasse a tabela,
+    ela teria sumido."""
     db.criar_schema(pool)
-    db.criar_schema(pool)  # rodar de novo não pode levantar
     with pool.connection() as conn:
-        row = conn.execute("SELECT count(*) AS n FROM leituras").fetchone()
-    assert row["n"] >= 0
+        conn.execute(
+            "INSERT INTO leituras (regiao, altura_cm, nivel_risco) "
+            "VALUES ('sobrevive', 9.9, 'ALTA')"
+        )
+
+    db.criar_schema(pool)  # rodar de novo não pode dropar nem recriar a tabela
+
+    with pool.connection() as conn:
+        row = conn.execute(
+            "SELECT altura_cm FROM leituras WHERE regiao = 'sobrevive'"
+        ).fetchone()
+    assert row is not None
+    assert row["altura_cm"] == 9.9
 
 
 def test_criar_schema_cria_indice_por_regiao(pool):
@@ -124,6 +164,30 @@ def test_criar_schema_renomeia_o_indice_junto(pool):
             ("idx_leituras_regiao_criado_em",),
         ).fetchone()
     assert row is not None
+
+
+def test_criar_schema_nao_deixa_objeto_nenhum_chamado_medicoes(pool):
+    """`idx_leituras_regiao_criado_em` sozinho não pega tudo: a sequence da
+    IDENTITY e o índice da PK também são renomeados pelo RENAME_SQL, e um
+    teste que olhasse só pro índice nomeado explicitamente não pegaria uma
+    regressão ali — passaria mesmo com `leituras` carregando sequence/pkey
+    ainda chamados `medicoes_*`.
+    """
+    _criar_legado(pool)
+
+    db.criar_schema(pool)
+
+    with pool.connection() as conn:
+        indices_orfaos = conn.execute(
+            "SELECT indexname FROM pg_indexes "
+            "WHERE tablename = 'leituras' AND indexname LIKE 'medicoes%'"
+        ).fetchall()
+        sequences_orfas = conn.execute(
+            "SELECT relname FROM pg_class "
+            "WHERE relkind = 'S' AND relname LIKE 'medicoes%'"
+        ).fetchall()
+    assert indices_orfaos == []
+    assert sequences_orfas == []
 
 
 def test_criar_schema_nao_mexe_se_as_duas_tabelas_existirem(pool):

@@ -8,13 +8,31 @@ from psycopg_pool import ConnectionPool
 # `CREATE TABLE IF NOT EXISTS leituras` vier primeiro, ele cria a tabela vazia,
 # este bloco desiste por ver que `leituras` já existe, e a `medicoes` de
 # produção fica órfã com todo o histórico dentro. Falha silenciosa.
+#
+# Renomeia tabela, sequence e índices juntos — confirmado empiricamente que
+# uma tabela `medicoes` criada com IDENTITY tem sequence `medicoes_id_seq` e
+# índice de PK `medicoes_pkey`; sem renomear os três, produção fica com
+# `leituras` cujos objetos internos ainda se chamam `medicoes_*`, divergente
+# de qualquer banco novo (que já nasce com tudo `leituras_*` via SCHEMA_SQL).
+# Renomear o índice da PK também renomeia a constraint correspondente
+# (mesmo objeto internamente) — não precisa de ALTER TABLE RENAME CONSTRAINT
+# à parte.
+#
+# Só dispara uma vez contra produção: no instante em que rodar,
+# to_regclass('public.leituras') deixa de ser NULL pra sempre e o bloco vira
+# no-op — não dá pra "consertar depois" com uma segunda passada deste mesmo
+# bloco. Pode ser apagado assim que o deploy tiver rodado em produção (a
+# partir de 2026-09-02); uma futura migração precisa do próprio bloco, não
+# deve se acumular aqui.
 RENAME_SQL = """
 DO $$
 BEGIN
     IF to_regclass('public.medicoes') IS NOT NULL
        AND to_regclass('public.leituras') IS NULL THEN
-        ALTER TABLE medicoes RENAME TO leituras;
-        ALTER INDEX IF EXISTS idx_medicoes_regiao_criado_em
+        ALTER TABLE public.medicoes RENAME TO leituras;
+        ALTER SEQUENCE IF EXISTS public.medicoes_id_seq RENAME TO leituras_id_seq;
+        ALTER INDEX IF EXISTS public.medicoes_pkey RENAME TO leituras_pkey;
+        ALTER INDEX IF EXISTS public.idx_medicoes_regiao_criado_em
             RENAME TO idx_leituras_regiao_criado_em;
     END IF;
 END $$;
