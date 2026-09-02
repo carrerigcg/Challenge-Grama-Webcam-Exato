@@ -1,6 +1,7 @@
 """Testes da camada de banco."""
 import os
 
+import psycopg
 import pytest
 from dotenv import load_dotenv
 
@@ -46,14 +47,17 @@ def _restaura_schema_no_fim_do_modulo():
     p.open()
     try:
         with p.connection() as conn:
-            # As duas — não só `medicoes`. Um `leituras` malformado (o stub de
+            # As três — não só `medicoes`. Um `leituras` malformado (o stub de
             # uma coluna só de test_criar_schema_nao_mexe_se_as_duas_tabelas_existirem,
             # por exemplo) faz o `CREATE TABLE IF NOT EXISTS` da SCHEMA_SQL virar
             # no-op e o `CREATE INDEX ... (regiao, ...)` seguinte estourar
             # UndefinedColumn — a própria função de restauração quebraria e
             # deixaria o banco de teste no estado exato que ela deveria evitar.
+            # `previsoes` entra pelo mesmo motivo: um `CREATE TABLE IF NOT
+            # EXISTS` também não conserta uma tabela malformada existente.
             conn.execute("DROP TABLE IF EXISTS leituras")
             conn.execute("DROP TABLE IF EXISTS medicoes")
+            conn.execute("DROP TABLE IF EXISTS previsoes")
         db.criar_schema(p)
     finally:
         p.close()
@@ -249,18 +253,74 @@ def test_criar_schema_cria_tabela_previsoes(pool):
 
 
 def test_previsoes_guarda_bytes_intactos(pool):
-    """BYTEA tem que devolver byte a byte o que entrou — xlsx é binário."""
+    """BYTEA tem que devolver byte a byte o que entrou — xlsx é binário.
+
+    Também pina o `tamanho_bytes` GERADO: é o comportamento que a coluna
+    generated existe pra garantir (nunca diverge do blob real). Limpa a
+    própria linha no final — mesma convenção de test_criar_schema_e_idempotente,
+    já que `test_db.py` não tem TRUNCATE por teste."""
     db.criar_schema(pool)
     conteudo = b"PK\x03\x04\x00\xff\xfe qualquer binario"
+    try:
+        with pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO previsoes (nome_arquivo, conteudo) VALUES (%s, %s)",
+                ("p.xlsx", conteudo),
+            )
+            row = conn.execute(
+                "SELECT conteudo, tamanho_bytes FROM previsoes "
+                "WHERE nome_arquivo = 'p.xlsx'"
+            ).fetchone()
+        assert bytes(row["conteudo"]) == conteudo
+        assert row["tamanho_bytes"] == len(conteudo)
+    finally:
+        with pool.connection() as conn:
+            conn.execute("DELETE FROM previsoes WHERE nome_arquivo = 'p.xlsx'")
+
+
+def test_previsoes_tamanho_bytes_rejeita_insert_explicito(pool):
+    """GENERATED ALWAYS não aceita valor explícito.
+
+    A coluna só pode vir de `length(conteudo)` — se aceitasse um valor à
+    parte, voltaria a poder divergir do blob, que é exatamente o problema
+    que a coluna generated existe pra fechar (scripts/ grava direto no banco,
+    sem passar pela validação da API)."""
+    db.criar_schema(pool)
     with pool.connection() as conn:
-        conn.execute("TRUNCATE previsoes RESTART IDENTITY")
-        conn.execute(
-            "INSERT INTO previsoes (nome_arquivo, conteudo, tamanho_bytes) "
-            "VALUES (%s, %s, %s)",
-            ("p.xlsx", conteudo, len(conteudo)),
-        )
-        row = conn.execute("SELECT conteudo FROM previsoes").fetchone()
-    assert bytes(row["conteudo"]) == conteudo
+        with pytest.raises(psycopg.errors.GeneratedAlways):
+            conn.execute(
+                "INSERT INTO previsoes (nome_arquivo, conteudo, tamanho_bytes) "
+                "VALUES (%s, %s, %s)",
+                ("p.xlsx", b"x", 1),
+            )
+
+
+def test_previsoes_rejeita_conteudo_vazio(pool):
+    """`''::bytea` passa pelo NOT NULL mas não é um xlsx válido — sem o CHECK,
+    um GET nessa linha serviria um download que não abre em nada."""
+    db.criar_schema(pool)
+    with pool.connection() as conn:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "INSERT INTO previsoes (nome_arquivo, conteudo) VALUES (%s, %s)",
+                ("vazio.xlsx", b""),
+            )
+
+
+def test_previsoes_rejeita_conteudo_maior_que_10mb(pool):
+    """Backstop contra um INSERT feito fora da API (scripts/, psql direto)
+    que não passaria pelo limite que a Task 5 vai aplicar.
+
+    `repeat('x', ...)::bytea` gera o blob grande dentro do próprio Postgres —
+    não faz sentido mandar 10 MB de verdade pela rede só pra provar que o
+    CHECK dispara."""
+    db.criar_schema(pool)
+    with pool.connection() as conn:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "INSERT INTO previsoes (nome_arquivo, conteudo) "
+                "VALUES ('grande.xlsx', repeat('x', 10*1024*1024 + 1)::bytea)"
+            )
 
 
 def test_criar_schema_cria_indice_de_previsoes_por_data(pool):

@@ -63,23 +63,40 @@ CREATE TABLE IF NOT EXISTS leituras (
 CREATE INDEX IF NOT EXISTS idx_leituras_regiao_criado_em
     ON leituras (regiao, criado_em DESC);
 
--- BYTEA em vez de arquivo em disco: o filesystem do Render free e efemero
--- (recriado a cada deploy e apos hibernar por inatividade), entao qualquer
+-- BYTEA em vez de arquivo em disco: o filesystem do Render free é efêmero
+-- (recriado a cada deploy e após hibernar por inatividade), então qualquer
 -- planilha salva em disco some sozinha. Um provedor externo (R2/B2) evitaria
 -- isso, mas exige conta e credenciais a mais contra o requisito de zero
--- custo/dependencia. O Postgres ja resolve: TOAST comprime e guarda valores
--- grandes fora da linha automaticamente, e uma planilha de poucos KB nao
+-- custo/dependência. O Postgres já resolve: TOAST comprime e guarda valores
+-- grandes fora da linha automaticamente, e uma planilha de poucos KB não
 -- chega perto do limite gratuito de 0.5 GB do Neon.
+--
+-- Nunca faça SELECT * nem RETURNING * nesta tabela: `conteudo` é o blob
+-- inteiro, e um SELECT * num endpoint de listagem detoasta e traz todos os
+-- blobs pra memória de uma vez — use uma lista explícita de colunas e só
+-- inclua `conteudo` no caminho de download de uma linha só.
 CREATE TABLE IF NOT EXISTS previsoes (
     id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     nome_arquivo  TEXT NOT NULL,
     conteudo      BYTEA NOT NULL,
-    tamanho_bytes BIGINT NOT NULL,
-    criado_em     TIMESTAMPTZ NOT NULL DEFAULT now()
+    -- GENERATED ... STORED, não VIRTUAL (PG 18): scripts/backup.py promete
+    -- restaurar em "QUALQUER Postgres" e STORED funciona a partir do PG 12.
+    -- length(bytea) vira byteaoctetlen, que lê o cabeçalho do ponteiro TOAST
+    -- (toast_raw_datum_size) sem detoastar — custa o mesmo que ler uma
+    -- coluna normal — e assim a coluna nunca diverge do blob, mesmo quando
+    -- scripts/ grava direto no banco por fora da API.
+    tamanho_bytes BIGINT GENERATED ALWAYS AS (length(conteudo)) STORED,
+    criado_em     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Backstop de disponibilidade, não regra de negócio: quem devolve o 413
+    -- amigável é a API (Task 5). O limite AQUI tem que ser o MESMO número
+    -- que a API usa — um teto do banco mais frouxo que o da API torna a
+    -- fronteira do 413 impossível de testar. Não afrouxe um sem o outro.
+    CONSTRAINT previsoes_conteudo_nao_vazio CHECK (length(conteudo) > 0),
+    CONSTRAINT previsoes_conteudo_ate_10mb  CHECK (length(conteudo) <= 10 * 1024 * 1024)
 );
 
 CREATE INDEX IF NOT EXISTS idx_previsoes_criado_em
-    ON previsoes (criado_em DESC);
+    ON previsoes (criado_em DESC, id DESC);
 """
 
 
