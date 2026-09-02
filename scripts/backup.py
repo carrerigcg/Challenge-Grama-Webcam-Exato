@@ -40,17 +40,17 @@ def exportar(url: str, destino: Path) -> tuple[Path, Path, int]:
     with psycopg.connect(url) as conn:
         with csv_path.open("w", encoding="utf-8", newline="") as f:
             with conn.cursor().copy(
-                "COPY medicoes TO STDOUT WITH (FORMAT csv, HEADER true)"
+                "COPY leituras TO STDOUT WITH (FORMAT csv, HEADER true)"
             ) as copy:
                 for bloco in copy:
                     f.write(bytes(bloco).decode("utf-8"))
 
-        linhas = conn.execute("SELECT * FROM medicoes ORDER BY id").fetchall()
+        linhas = conn.execute("SELECT * FROM leituras ORDER BY id").fetchall()
 
     with sql_path.open("w", encoding="utf-8") as f:
-        f.write("-- Backup de medicoes. Restaure com: psql \"$URL\" < este.sql\n")
+        f.write("-- Backup de leituras. Restaure com: psql \"$URL\" < este.sql\n")
         f.write(
-            "CREATE TABLE IF NOT EXISTS medicoes (\n"
+            "CREATE TABLE IF NOT EXISTS leituras (\n"
             "    id            BIGINT PRIMARY KEY,\n"
             "    regiao        TEXT NOT NULL,\n"
             "    altura_cm     DOUBLE PRECISION NOT NULL,\n"
@@ -63,7 +63,7 @@ def exportar(url: str, destino: Path) -> tuple[Path, Path, int]:
         for linha in linhas:
             valores = ", ".join(_literal(v) for v in linha)
             f.write(
-                f"INSERT INTO medicoes ({', '.join(COLUNAS)}) "
+                f"INSERT INTO leituras ({', '.join(COLUNAS)}) "
                 f"VALUES ({valores});\n"
             )
 

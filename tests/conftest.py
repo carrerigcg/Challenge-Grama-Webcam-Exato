@@ -47,7 +47,7 @@ def _cliente_da_sessao(_env_de_teste):
 def client(_cliente_da_sessao):
     """Tabela limpa a cada teste, reaproveitando a conexão da sessão."""
     with _cliente_da_sessao.app.state.pool.connection() as conn:
-        conn.execute("TRUNCATE medicoes RESTART IDENTITY")
+        conn.execute("TRUNCATE leituras RESTART IDENTITY")
     return _cliente_da_sessao
 
 

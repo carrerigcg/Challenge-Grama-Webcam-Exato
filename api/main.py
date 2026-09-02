@@ -102,7 +102,7 @@ def criar_medicao(medicao: MedicaoIn, request: Request):
     with request.app.state.pool.connection() as conn:
         row = conn.execute(
             """
-            INSERT INTO medicoes
+            INSERT INTO leituras
                 (regiao, altura_cm, nivel_risco, temperatura_c, clima)
             VALUES (%s, %s, %s, %s, %s)
             RETURNING *
@@ -128,7 +128,7 @@ def listar_medicoes(
     regiao: str | None = None,
     limit: int = Query(100, ge=1, le=1000),
 ):
-    sql = "SELECT * FROM medicoes"
+    sql = "SELECT * FROM leituras"
     params: list = []
     if regiao:
         sql += " WHERE regiao = %s"
@@ -147,7 +147,7 @@ def listar_medicoes(
 def buscar_medicao(medicao_id: int, request: Request):
     with request.app.state.pool.connection() as conn:
         row = conn.execute(
-            "SELECT * FROM medicoes WHERE id = %s", (medicao_id,)
+            "SELECT * FROM leituras WHERE id = %s", (medicao_id,)
         ).fetchone()
     if row is None:
         raise HTTPException(404, "Medição não encontrada")

@@ -38,7 +38,7 @@ def test_post_persiste_de_fato_no_banco(client, headers_escrita, headers_leitura
     """Prova que o dado sobrevive fora da memória do processo."""
     client.post("/medicoes", json=_payload(altura=7.7), headers=headers_escrita)
     with client.app.state.pool.connection() as conn:
-        row = conn.execute("SELECT altura_cm FROM medicoes").fetchone()
+        row = conn.execute("SELECT altura_cm FROM leituras").fetchone()
     assert row["altura_cm"] == 7.7
 
 

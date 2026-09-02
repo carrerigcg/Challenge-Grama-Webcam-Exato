@@ -4,8 +4,24 @@ from __future__ import annotations
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+# Roda ANTES do SCHEMA_SQL. A ordem não é negociável: se o
+# `CREATE TABLE IF NOT EXISTS leituras` vier primeiro, ele cria a tabela vazia,
+# este bloco desiste por ver que `leituras` já existe, e a `medicoes` de
+# produção fica órfã com todo o histórico dentro. Falha silenciosa.
+RENAME_SQL = """
+DO $$
+BEGIN
+    IF to_regclass('public.medicoes') IS NOT NULL
+       AND to_regclass('public.leituras') IS NULL THEN
+        ALTER TABLE medicoes RENAME TO leituras;
+        ALTER INDEX IF EXISTS idx_medicoes_regiao_criado_em
+            RENAME TO idx_leituras_regiao_criado_em;
+    END IF;
+END $$;
+"""
+
 SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS medicoes (
+CREATE TABLE IF NOT EXISTS leituras (
     id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     regiao        TEXT NOT NULL,
     altura_cm     DOUBLE PRECISION NOT NULL,
@@ -15,8 +31,8 @@ CREATE TABLE IF NOT EXISTS medicoes (
     criado_em     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_medicoes_regiao_criado_em
-    ON medicoes (regiao, criado_em DESC);
+CREATE INDEX IF NOT EXISTS idx_leituras_regiao_criado_em
+    ON leituras (regiao, criado_em DESC);
 """
 
 
@@ -37,6 +53,7 @@ def criar_pool(database_url: str) -> ConnectionPool:
 
 
 def criar_schema(pool: ConnectionPool) -> None:
-    """Cria tabela e índice se não existirem. Idempotente."""
+    """Migra e cria o schema. Idempotente. Rename primeiro — veja RENAME_SQL."""
     with pool.connection() as conn:
+        conn.execute(RENAME_SQL)
         conn.execute(SCHEMA_SQL)
