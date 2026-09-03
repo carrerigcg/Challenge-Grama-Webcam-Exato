@@ -11,6 +11,7 @@ Uso:  python scripts/backup.py
 from __future__ import annotations
 
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -40,17 +41,17 @@ def exportar(url: str, destino: Path) -> tuple[Path, Path, int]:
     with psycopg.connect(url) as conn:
         with csv_path.open("w", encoding="utf-8", newline="") as f:
             with conn.cursor().copy(
-                "COPY medicoes TO STDOUT WITH (FORMAT csv, HEADER true)"
+                "COPY leituras TO STDOUT WITH (FORMAT csv, HEADER true)"
             ) as copy:
                 for bloco in copy:
                     f.write(bytes(bloco).decode("utf-8"))
 
-        linhas = conn.execute("SELECT * FROM medicoes ORDER BY id").fetchall()
+        linhas = conn.execute("SELECT * FROM leituras ORDER BY id").fetchall()
 
     with sql_path.open("w", encoding="utf-8") as f:
-        f.write("-- Backup de medicoes. Restaure com: psql \"$URL\" < este.sql\n")
+        f.write("-- Backup de leituras. Restaure com: psql \"$URL\" < este.sql\n")
         f.write(
-            "CREATE TABLE IF NOT EXISTS medicoes (\n"
+            "CREATE TABLE IF NOT EXISTS leituras (\n"
             "    id            BIGINT PRIMARY KEY,\n"
             "    regiao        TEXT NOT NULL,\n"
             "    altura_cm     DOUBLE PRECISION NOT NULL,\n"
@@ -63,7 +64,7 @@ def exportar(url: str, destino: Path) -> tuple[Path, Path, int]:
         for linha in linhas:
             valores = ", ".join(_literal(v) for v in linha)
             f.write(
-                f"INSERT INTO medicoes ({', '.join(COLUNAS)}) "
+                f"INSERT INTO leituras ({', '.join(COLUNAS)}) "
                 f"VALUES ({valores});\n"
             )
 
@@ -78,6 +79,59 @@ def _literal(valor) -> str:
     return "'" + str(valor).replace("'", "''") + "'"
 
 
+# `criar_previsao` (api/main.py) só recusa o que corromperia um header HTTP
+# (aspas, barra invertida, controle, fora do Latin-1) — não tem por que saber
+# de NTFS. `:` `*` `?` `<` `>` `|` passam por aquela validação tranquilos e
+# ainda assim o Windows recusa como nome de arquivo, então "previsao:2026.xlsx"
+# é um nome válido no banco e inválido em disco. Troca por "_" em vez de
+# recusar: isto é backup, não upload — perder um caractere cosmético do nome
+# é aceitável, abortar a exportação (ou a linha) não é.
+_CARACTERES_INVALIDOS_ARQUIVO = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def _nome_seguro(nome: str) -> str:
+    """Troca por `_` os caracteres que o Windows recusa em nome de arquivo."""
+    nome = _CARACTERES_INVALIDOS_ARQUIVO.sub("_", nome)
+    # Windows também recusa nome terminado em espaço ou ponto; troca por um
+    # nome genérico só no caso degenerado de sobrar vazio (nome era só pontos
+    # e espaços).
+    return nome.rstrip(" .") or "previsao"
+
+
+def exportar_previsoes(url: str, destino: Path) -> int:
+    """Grava cada previsão como .xlsx dentro de <destino>/. Retorna quantas.
+
+    Arquivo de verdade em vez de bytea codificado dentro de um INSERT: abre
+    no Excel na hora, que é o ponto do backup. NÃO acrescente `previsoes` ao
+    export .sql: `_literal` cai no `str(valor)` pra tipos desconhecidos, o que
+    num `bytes` emite o repr do Python (`'b'PK\\x03\\x04''`) e gera um .sql que
+    restaura dado corrompido sem erro nenhum.
+    """
+    destino.mkdir(parents=True, exist_ok=True)
+    with psycopg.connect(url) as conn:
+        linhas = conn.execute(
+            "SELECT id, nome_arquivo, conteudo FROM previsoes ORDER BY id"
+        ).fetchall()
+
+    gravadas = 0
+    for linha in linhas:
+        id_, nome, conteudo = linha
+        # Prefixo com o id: dois uploads podem ter o mesmo nome de arquivo,
+        # e também sobrevive à sanitização acima colidir dois nomes distintos.
+        caminho = destino / f"{id_:04d}-{_nome_seguro(nome)}"
+        try:
+            caminho.write_bytes(bytes(conteudo))
+        except OSError as erro:
+            # Defesa em profundidade: a sanitização acima já deveria bastar,
+            # mas um SO tem mais reservas do que a lista de caracteres cobre
+            # (nomes reservados tipo CON/NUL, caminho longo demais). Uma
+            # previsão ilegível não pode derrubar as que vêm depois no laço.
+            print(f"AVISO: previsão {id_} não pôde ser gravada ({erro})", file=sys.stderr)
+            continue
+        gravadas += 1
+    return gravadas
+
+
 def main() -> int:
     load_dotenv(RAIZ / ".env")
     url = os.environ.get("DATABASE_URL")
@@ -87,10 +141,14 @@ def main() -> int:
 
     carimbo = datetime.now().strftime("%Y-%m-%d-%H%M")
     csv_path, sql_path, n = exportar(url, RAIZ / "backups" / f"medicoes-{carimbo}")
+    n_previsoes = exportar_previsoes(url, RAIZ / "backups" / f"previsoes-{carimbo}")
 
     print(f"{n} medições exportadas")
     print(f"  CSV: {csv_path.relative_to(RAIZ)}")
     print(f"  SQL: {sql_path.relative_to(RAIZ)}")
+    print(f"{n_previsoes} previsões exportadas")
+    if n_previsoes:
+        print(f"  XLSX: backups/previsoes-{carimbo}/")
     return 0
 
 

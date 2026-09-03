@@ -554,9 +554,8 @@ def test_previsoes_guarda_bytes_intactos(pool):
     with pool.connection() as conn:
         conn.execute("TRUNCATE previsoes RESTART IDENTITY")
         conn.execute(
-            "INSERT INTO previsoes (nome_arquivo, conteudo, tamanho_bytes) "
-            "VALUES (%s, %s, %s)",
-            ("p.xlsx", conteudo, len(conteudo)),
+            "INSERT INTO previsoes (nome_arquivo, conteudo) VALUES (%s, %s)",
+            ("p.xlsx", conteudo),
         )
         row = conn.execute("SELECT conteudo FROM previsoes").fetchone()
     assert bytes(row["conteudo"]) == conteudo
@@ -750,9 +749,13 @@ def criar_previsao(request: Request, arquivo: UploadFile = File(...)):
     nome = os.path.basename(arquivo.filename or "")
     if not nome.lower().endswith(".xlsx"):
         raise HTTPException(400, "O arquivo precisa ser .xlsx")
-    # O nome vai parar num header Content-Disposition no GET. Aspas e quebra de
-    # linha ali dentro corrompem o header, então recusa antes de guardar.
-    if any(c in nome for c in '"\r\n'):
+    # O nome vem do cliente e vai parar num header Content-Disposition no GET.
+    # CR/LF ali dentro é injeção de header; aspas e caracteres de controle
+    # corrompem o valor; um nome absurdamente longo também quebra. Recusa
+    # antes de guardar — o banco não tem como desfazer isso depois.
+    if len(nome) > 200:
+        raise HTTPException(400, "Nome de arquivo longo demais")
+    if '"' in nome or any(ord(c) < 32 or ord(c) == 127 for c in nome):
         raise HTTPException(400, "Nome de arquivo inválido")
 
     conteudo = arquivo.file.read()
@@ -764,11 +767,11 @@ def criar_previsao(request: Request, arquivo: UploadFile = File(...)):
     with request.app.state.pool.connection() as conn:
         row = conn.execute(
             """
-            INSERT INTO previsoes (nome_arquivo, conteudo, tamanho_bytes)
-            VALUES (%s, %s, %s)
+            INSERT INTO previsoes (nome_arquivo, conteudo)
+            VALUES (%s, %s)
             RETURNING id, nome_arquivo, tamanho_bytes, criado_em
             """,
-            (nome, conteudo, len(conteudo)),
+            (nome, conteudo),
         ).fetchone()
     return row
 ```
@@ -952,7 +955,10 @@ def exportar_previsoes(url: str, destino: Path) -> int:
     """Grava cada previsão como .xlsx dentro de <destino>/. Retorna quantas.
 
     Arquivo de verdade em vez de bytea codificado dentro de um INSERT: abre
-    no Excel na hora, que é o ponto do backup.
+    no Excel na hora, que é o ponto do backup. NÃO acrescente `previsoes` ao
+    export .sql: `_literal` cai no `str(valor)` pra tipos desconhecidos, o que
+    num `bytes` emite o repr do Python (`'b'PK''`) e gera um .sql que
+    restaura dado corrompido sem erro nenhum.
     """
     destino.mkdir(parents=True, exist_ok=True)
     with psycopg.connect(url) as conn:

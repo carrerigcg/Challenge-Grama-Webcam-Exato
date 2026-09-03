@@ -448,7 +448,7 @@ def enviar_medicao(
     for tentativa in range(1, ENVIO_TENTATIVAS + 1):
         try:
             r = requests.post(
-                f"{API_URL}/medicoes",
+                f"{API_URL}/leituras",
                 json=payload,
                 headers={"X-API-Key": API_KEY_WRITE},
                 timeout=ENVIO_TIMEOUT_S,
