@@ -1,11 +1,18 @@
-"""Insere medições de exemplo no banco pra o consumidor externo testar GETs.
+"""Reinicia `leituras` com 21 medições de crescimento contínuo pra demo.
 
-One-shot. Backdateia criado_em pra formar uma série temporal de ~4 semanas,
-o que POST /leituras não permite (aquele grava now() sempre).
+Uma região só ("Rod. Anchieta"), 1 ponto a cada 4 dias durante ~12 semanas,
+altura estritamente crescente (0.4 → 12.4 cm) atravessando BAIXA, MEDIA e
+ALTA. Sem simulação de roçada — o ponto é dar ao consumidor externo uma
+série limpa pra plotar e testar GETs.
+
+DESTRUTIVO: TRUNCATE em `leituras` antes de inserir. Exige `--confirm-prod`
+pra rodar; sem a flag, sai com erro. Isso mata o acidente clássico de
+`python scripts/seed_exemplos.py` sem pensar contra o banco de produção.
 """
 from __future__ import annotations
 
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 
 import psycopg
@@ -15,48 +22,68 @@ load_dotenv()
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
-# (dias_atras, hora_utc, regiao, altura_cm, nivel_risco, temperatura_c, clima)
-# Alturas coerentes com as faixas de medir_grama.py:
-#   BAIXA  <= 3.0
-#   MEDIA  3.0 < h <= 7.0
-#   ALTA   > 7.0
-#   AUSENTE = sem grama detectada (altura 0.0)
-EXEMPLOS = [
-    # --- Rod. Anchieta: manutenção recente, grama volta a crescer ---
-    (28, 14, "Rod. Anchieta",     8.4,  "ALTA",    19.2, "Nublado"),
-    (26, 14, "Rod. Anchieta",     9.1,  "ALTA",    21.0, "Céu limpo"),
-    (21, 14, "Rod. Anchieta",     0.0,  "AUSENTE", 18.5, "Chuva leve"),   # roçada
-    (19, 14, "Rod. Anchieta",     0.6,  "BAIXA",   20.1, "Céu limpo"),
-    (14, 14, "Rod. Anchieta",     1.9,  "BAIXA",   22.4, "Parcialmente nublado"),
-    ( 7, 14, "Rod. Anchieta",     3.7,  "MEDIA",   24.8, "Céu limpo"),
-    ( 2, 14, "Rod. Anchieta",     5.2,  "MEDIA",   None, None),          # Open-Meteo caiu
-    ( 0, 14, "Rod. Anchieta",     6.1,  "MEDIA",   23.9, "Nublado"),
+REGIAO = "Rod. Anchieta"
+HORA_UTC = 14
+N_PONTOS = 21
+PASSO_DIAS = 4
+ALTURA_INICIAL_CM = 0.4
+PASSO_ALTURA_CM = 0.6
 
-    # --- Rod. Imigrantes: grama alta há semanas, cliente atrasou roçada ---
-    (27, 15, "Rod. Imigrantes",   7.8,  "ALTA",    18.7, "Chuva leve"),
-    (20, 15, "Rod. Imigrantes",   9.3,  "ALTA",    20.4, "Nublado"),
-    (13, 15, "Rod. Imigrantes",  10.6,  "ALTA",    None, None),
-    ( 6, 15, "Rod. Imigrantes",  11.9,  "ALTA",    22.8, "Céu limpo"),
-    ( 1, 15, "Rod. Imigrantes",  12.4,  "ALTA",    24.1, "Parcialmente nublado"),
-
-    # --- Rod. Ayrton Senna: estável em faixa segura ---
-    (25, 10, "Rod. Ayrton Senna", 2.1,  "BAIXA",   17.9, "Nublado"),
-    (18, 10, "Rod. Ayrton Senna", 2.8,  "BAIXA",   19.6, "Céu limpo"),
-    (11, 10, "Rod. Ayrton Senna", 3.4,  "MEDIA",   21.2, "Céu limpo"),
-    ( 4, 10, "Rod. Ayrton Senna", 4.0,  "MEDIA",   22.7, "Parcialmente nublado"),
-    ( 0, 10, "Rod. Ayrton Senna", 4.6,  "MEDIA",   23.3, "Nublado"),
-]
+# Ciclo curto pra o consumidor externo ver os quatro valores possíveis de
+# `clima` no dataset sem ter que rolar muito — não pretende ser meteorologia.
+CLIMAS = ("Nublado", "Céu limpo", "Parcialmente nublado", "Chuva leve")
 
 
-def main() -> None:
+def _nivel_risco(altura_cm: float) -> str:
+    # Faixas replicam medir_grama.py: BAIXA ≤ 3.0, MEDIA (3.0, 7.0], ALTA > 7.0.
+    if altura_cm <= 3.0:
+        return "BAIXA"
+    if altura_cm <= 7.0:
+        return "MEDIA"
+    return "ALTA"
+
+
+def _gerar_pontos() -> list[tuple[int, float, str, float, str]]:
+    """21 tuplas (dias_atras, altura_cm, nivel_risco, temperatura_c, clima).
+
+    dias_atras vai de (N-1)*passo até 0, então o ponto mais recente cai
+    exatamente no dia de hoje — GET com filtro "últimos 7 dias" já pega
+    algo sem precisar backdate manual."""
+    pontos = []
+    for i in range(N_PONTOS):
+        dias_atras = (N_PONTOS - 1 - i) * PASSO_DIAS
+        altura = round(ALTURA_INICIAL_CM + PASSO_ALTURA_CM * i, 1)
+        # Temperatura ondula em torno de uma reta 18°C → 26°C ao longo dos
+        # 21 pontos, simulando a transição de primavera pra verão em SP sem
+        # forçar meteorologia real.
+        temperatura = round(18.0 + 0.4 * i + (0.5 if i % 2 else -0.3), 1)
+        pontos.append((dias_atras, altura, _nivel_risco(altura), temperatura, CLIMAS[i % 4]))
+    return pontos
+
+
+def main() -> int:
+    if "--confirm-prod" not in sys.argv:
+        print(
+            "ERRO: este script APAGA tudo em `leituras` e insere 21 medições\n"
+            "de demonstração. Passe --confirm-prod pra confirmar.",
+            file=sys.stderr,
+        )
+        return 1
+
     agora = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     linhas = []
-    for dias, hora, regiao, altura, nivel, temp, clima in EXEMPLOS:
-        criado_em = (agora - timedelta(days=dias)).replace(hour=hora)
-        linhas.append((regiao, altura, nivel, temp, clima, criado_em))
+    for dias, altura, risco, temp, clima in _gerar_pontos():
+        criado_em = (agora - timedelta(days=dias)).replace(hour=HORA_UTC)
+        linhas.append((REGIAO, altura, risco, temp, clima, criado_em))
 
     with psycopg.connect(DATABASE_URL) as conn:
         with conn.cursor() as cur:
+            # TRUNCATE + RESTART IDENTITY: reseta a sequence pra `id` começar
+            # em 1 na nova série (mais limpo pra demo do que continuar de
+            # onde parou). O TRUNCATE requer privilégio de OWNER — o mesmo
+            # papel que a API usa pra CREATE TABLE já tem, então funciona
+            # tanto local quanto no Neon.
+            cur.execute("TRUNCATE leituras RESTART IDENTITY")
             cur.executemany(
                 """
                 INSERT INTO leituras
@@ -65,8 +92,9 @@ def main() -> None:
                 """,
                 linhas,
             )
-    print(f"OK: {len(linhas)} medições inseridas")
+    print(f"OK: {len(linhas)} medições em '{REGIAO}' (12 semanas, 1 a cada 4 dias)")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
