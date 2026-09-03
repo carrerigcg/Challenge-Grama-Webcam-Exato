@@ -8,7 +8,7 @@ import pytest
 from dotenv import load_dotenv
 
 from api import db
-from scripts.backup import _nome_seguro, exportar_previsoes
+from scripts.backup import _nome_seguro, _tabela_leituras, exportar_previsoes
 
 load_dotenv()
 
@@ -97,3 +97,44 @@ def test_exportar_previsoes_tabela_vazia_nao_gera_arquivo(pool, tmp_path):
     n = exportar_previsoes(_url(), tmp_path)
     assert n == 0
     assert list(tmp_path.iterdir()) == []
+
+
+def test_tabela_leituras_escolhe_o_nome_novo_quando_existe(pool):
+    """Cenário comum: banco já rodou o RENAME_SQL e está em `leituras`."""
+    with pool.connection() as conn:
+        assert _tabela_leituras(conn) == "leituras"
+
+
+def test_tabela_leituras_cai_no_antigo_quando_so_medicoes_existe(pool):
+    """Cenário raro mas real: restaurar backup pré-rename num Postgres limpo
+    e rodar backup.py antes de subir a API — a API é quem faz o rename, sem
+    ela `leituras` não existe ainda. O script tem que continuar funcionando."""
+    with pool.connection() as conn:
+        conn.execute("DROP TABLE leituras CASCADE")
+        conn.execute(
+            "CREATE TABLE medicoes ("
+            "id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, "
+            "regiao TEXT NOT NULL, altura_cm DOUBLE PRECISION NOT NULL, "
+            "nivel_risco TEXT NOT NULL, temperatura_c DOUBLE PRECISION, "
+            "clima TEXT, criado_em TIMESTAMPTZ NOT NULL DEFAULT now())"
+        )
+        try:
+            assert _tabela_leituras(conn) == "medicoes"
+        finally:
+            conn.execute("DROP TABLE medicoes")
+    # Recria `leituras` pra não vazar tabela dropada pro próximo teste da
+    # suíte, que pode ser em outro arquivo (test_db.py também mexe aqui).
+    db.criar_schema(pool)
+
+
+def test_tabela_leituras_erra_com_mensagem_clara_quando_nenhuma_existe(pool):
+    """Sem `leituras` nem `medicoes` o COPY estouraria UndefinedTable sem
+    explicar. A função tem que devolver mensagem que aponte a causa."""
+    with pool.connection() as conn:
+        conn.execute("DROP TABLE leituras CASCADE")
+        try:
+            with pytest.raises(RuntimeError, match="nem `medicoes`"):
+                _tabela_leituras(conn)
+        finally:
+            pass
+    db.criar_schema(pool)
