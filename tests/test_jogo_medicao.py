@@ -266,3 +266,57 @@ async def test_entregar_sem_medicao_em_andamento_nao_faz_nada():
     medidor.entregar_resultado({"altura_cm": 17.5, "id": 1})
     medidor.entregar_erro("ninguém pediu nada")
     assert medidor._esperando is None
+
+async def test_medicao_que_acorda_tarde_nao_apaga_o_future_da_seguinte():
+    """O `finally` de uma medição não pode apagar o future de outra.
+
+    Precisa das duas medições SOBREPOSTAS: a primeira acordando depois de a
+    segunda já ter registrado o future dela. A primeira versão deste teste
+    aguardava a primeira medição inline, então ela terminava antes de a
+    segunda existir — e passava com o bug presente. Um teste de mutação expôs
+    isso: sabotar o `finally` não a fazia falhar.
+
+    A ordem depende do agendamento do asyncio. No 3.11 o `wait_for` usa um
+    callback intermediário, então o primeiro passo da segunda medição roda
+    antes de a primeira retomar; no 3.12 isso mudou. Por isso a pré-condição é
+    afirmada no meio do teste: se o agendamento inverter, ele falha avisando,
+    em vez de passar sem exercer nada.
+
+    Alcança `_esperando`, que é privado, de propósito: a pré-condição é sobre
+    agendamento, e não há jeito público de observá-la.
+    """
+    medidor = Medidor(timeout_s=0.5)
+    primeira = CanalFalso()
+    medidor.conectar(primeira)
+
+    tarefa_a = asyncio.create_task(medidor.medir())
+    await esperar_ordem(primeira)
+    futuro_a = medidor._esperando
+
+    # Daqui até o create_task de B não pode haver await: é o que mantém A
+    # agendada e ainda não retomada.
+    medidor.desconectar(primeira)
+    segunda = CanalFalso()
+    medidor.conectar(segunda)
+    tarefa_b = asyncio.create_task(medidor.medir())
+
+    await asyncio.sleep(0)  # deixa só o primeiro passo de B rodar
+
+    futuro_b = medidor._esperando
+    assert futuro_b is not None and futuro_b is not futuro_a, (
+        "a segunda medição não registrou o future antes de a primeira acordar: "
+        "o agendamento do asyncio mudou e este teste parou de exercer o bug"
+    )
+    assert not tarefa_a.done(), (
+        "a primeira medição já acordou: sem sobreposição, o bug não aparece"
+    )
+
+    with pytest.raises(ErroDeMedicao, match="caiu no meio"):
+        await tarefa_a
+
+    # Sem a checagem de identidade no `finally`, A apagou o future de B aqui, e
+    # esta resposta é descartada — B estoura o timeout em vez de devolver 9.0.
+    ordem = segunda.ordens[-1]
+    medidor.entregar_resultado({"altura_cm": 9.0, "id": ordem["id"]})
+    resultado = await tarefa_b
+    assert resultado["altura_cm"] == 9.0
