@@ -76,6 +76,22 @@ class Medidor:
         self.canal = None
         self._falhar_espera("A ponte da câmera caiu no meio da medição.")
 
+    def cancelar_medicao(self) -> None:
+        """Esquece a medição em voo, mantendo a ponte conectada.
+
+        O `nova_rodada` da sala é a válvula de escape do apresentador, mas ela
+        não alcançava o medidor: a espera da rodada anterior continuava
+        pendente, e o MEDIR seguinte era recusado com "já existe uma medição
+        em andamento" até estourar o timeout. Válvula que não solta a câmera
+        não escapa.
+
+        A resposta atrasada da ordem cancelada é descartada pelo `id`, então
+        ela não entra na medição nova.
+        """
+        self._falhar_espera("Medição cancelada pelo apresentador.")
+        self._esperando = None
+        self._ordem_esperada = None
+
     # --- medição -------------------------------------------------------------
 
     async def medir(self) -> dict:

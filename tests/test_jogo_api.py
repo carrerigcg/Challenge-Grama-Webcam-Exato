@@ -670,7 +670,7 @@ def _receber(ws, prazo_s=5.0):
     t.start()
     t.join(prazo_s)
     if t.is_alive():
-        pytest.fail(f"nenhum frame em {prazo_s}s: o wake-up do socket se perdeu")
+        pytest.fail(f"nenhum frame em {prazo_s}s: o frame nunca saiu, ou o wake-up do socket se perdeu")
     if "e" in saida:
         raise saida["e"]
     return saida["v"]
@@ -703,3 +703,60 @@ def test_ordem_chega_na_ponte_mesmo_quando_a_task_de_medicao_demora(client, monk
                 assert _receber(ponte)["cmd"] == "medir"
     finally:
         ws_jogador.__exit__(None, None, None)
+
+
+def _ate(ws, condicao, max_frames=8):
+    """Lê frames (com prazo) até um satisfazer `condicao`; devolve esse frame.
+
+    A task da medição cancelada ainda transmite um frame de falha depois do
+    reset, então o número de frames entre dois eventos não é fixo.
+    """
+    for _ in range(max_frames):
+        frame = _receber(ws)
+        if condicao(frame):
+            return frame
+    pytest.fail("o frame esperado não chegou")
+
+
+def test_medir_funciona_logo_depois_de_reset_no_meio_da_medicao(client):
+    """O cenário real da feira: o grupo vai embora durante a medição.
+
+    Antes, o MEDIR seguinte era recusado com "já existe uma medição em
+    andamento" por até 15s, porque o `nova_rodada` não alcançava o medidor.
+
+    A ponte e o host ficam conectados o teste todo: fechar a ponte entre as
+    duas medições também falharia a espera (pelo `desconectar`) e esconderia o
+    defeito — foi assim que a primeira versão deste teste passou sem a correção.
+    """
+    ws_ana, _ = _jogador_que_chutou(client, "Ana", 16.0)
+    ws_bruno = None
+    try:
+        with client.websocket_connect(f"/ws/ponte?token={PONTE_TOKEN}") as ponte:
+            with client.websocket_connect(f"/ws/host?token={HOST_TOKEN}") as host:
+                host.receive_json()
+                host.send_json({"cmd": "medir"})
+                assert _receber(host)["estado"] == "MEDINDO"
+                _receber(ponte)  # a ordem da primeira medição
+
+                # A câmera não responde e o apresentador reseta.
+                host.send_json({"cmd": "nova_rodada"})
+                assert _ate(host, lambda f: f["jogadores"] == [])["estado"] == "AGUARDANDO"
+                ws_ana.__exit__(None, None, None)
+                ws_ana = None
+
+                # Grupo novo, e o MEDIR tem de funcionar na hora.
+                ws_bruno, _ = _jogador_que_chutou(client, "Bruno", 9.0)
+                _ate(host, lambda f: f["quantos_chutaram"] == 1)
+                host.send_json({"cmd": "medir"})
+                _ate(host, lambda f: f["estado"] == "MEDINDO")
+                # A ordem chega na ponte, em vez de a medição ser recusada.
+                assert _receber(ponte)["cmd"] == "medir"
+                # E nenhuma recusa chega ao palco.
+                host.send_json({"cmd": "travar", "travada": True})
+                estado = _receber(host)
+                assert estado["estado"] == "MEDINDO", estado.get("erro")
+                assert estado["erro"] is None
+    finally:
+        for ws in (ws_ana, ws_bruno):
+            if ws is not None:
+                ws.__exit__(None, None, None)

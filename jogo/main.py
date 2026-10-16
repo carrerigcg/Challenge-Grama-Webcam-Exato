@@ -346,6 +346,9 @@ async def ws_host(ws: WebSocket, token: str | None = None):
                     continue
                 if cmd == "nova_rodada":
                     sala.nova_rodada()
+                    # A válvula de escape tem de soltar a câmera também: sem
+                    # isto, o MEDIR seguinte é recusado por até 15s.
+                    medidor.cancelar_medicao()
                 elif cmd == "travar":
                     sala.definir_trava(bool(msg.get("travada")))
                 else:

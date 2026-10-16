@@ -320,3 +320,40 @@ async def test_medicao_que_acorda_tarde_nao_apaga_o_future_da_seguinte():
     medidor.entregar_resultado({"altura_cm": 9.0, "id": ordem["id"]})
     resultado = await tarefa_b
     assert resultado["altura_cm"] == 9.0
+
+
+async def test_cancelar_medicao_libera_a_proxima_sem_soltar_a_ponte():
+    """A válvula de escape do apresentador tem de soltar a câmera também."""
+    medidor = Medidor()
+    canal = CanalFalso()
+    medidor.conectar(canal)
+
+    async def cancelar():
+        await esperar_ordem(canal)
+        medidor.cancelar_medicao()
+
+    t_cancelar = asyncio.create_task(cancelar())
+    with pytest.raises(ErroDeMedicao, match="cancelada"):
+        await medidor.medir()
+    await t_cancelar
+
+    # A ponte continua conectada: o reset não derruba a câmera.
+    assert medidor.conectado is True
+
+    async def responder():
+        # Com teto, como `esperar_ordem`: sem ele, um bug pendura a suíte.
+        for _ in range(10_000):
+            if len(canal.ordens) >= 2:
+                break
+            await asyncio.sleep(0)
+        else:
+            raise AssertionError("a segunda ordem nunca saiu no canal")
+        medidor.entregar_resultado(
+            {"altura_cm": 9.0, "id": canal.ordens[-1]["id"]}
+        )
+
+    t_responder = asyncio.create_task(responder())
+    resultado = await medidor.medir()
+    await t_responder
+    assert resultado["altura_cm"] == 9.0
+
