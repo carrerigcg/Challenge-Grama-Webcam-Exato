@@ -20,6 +20,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSoc
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from jogo.difusor import Difusor
 from jogo.medicao import Medidor
 from jogo.sala import ErroDeJogo, Estado, Sala
 
@@ -118,7 +119,6 @@ def qr(request: Request):
 
 # Todos os clientes recebem o MESMO payload. Nenhum tem versão especial: é o que
 # mantém o broadcast trivial e impede vazamento acidental de chute.
-_clientes: set[WebSocket] = set()
 
 
 def estado_atual() -> dict:
@@ -150,15 +150,8 @@ def estado_atual() -> dict:
     }
 
 
-async def transmitir() -> None:
-    payload = estado_atual()
-    for cliente in list(_clientes):
-        try:
-            await cliente.send_json(payload)
-        except Exception:
-            # Socket morto sai daqui; o `finally` do handler também remove, e
-            # descartar duas vezes de um set não custa nada.
-            _clientes.discard(cliente)
+# Declarado depois de `estado_atual`, porque recebe a referência dela.
+difusor = Difusor(estado_atual)
 
 
 # --- WebSocket dos jogadores -------------------------------------------------
@@ -167,7 +160,7 @@ async def transmitir() -> None:
 @app.websocket("/ws/jogador")
 async def ws_jogador(ws: WebSocket):
     await ws.accept()
-    _clientes.add(ws)
+    difusor.adicionar(ws)
     try:
         while True:
             msg = await ws.receive_json()
@@ -200,11 +193,11 @@ async def ws_jogador(ws: WebSocket):
             except (TypeError, ValueError):
                 await ws.send_json({"tipo": "erro", "mensagem": "Digite um número."})
                 continue
-            await transmitir()
+            await difusor.transmitir()
     except WebSocketDisconnect:
         pass
     finally:
-        _clientes.discard(ws)
+        difusor.remover(ws)
 
 
 # --- WebSocket do palco ------------------------------------------------------
@@ -214,12 +207,14 @@ async def ws_jogador(ws: WebSocket):
 async def ws_palco(ws: WebSocket):
     """Palco sem token: só observa. Os comandos vivem em `/ws/host`."""
     await ws.accept()
-    _clientes.add(ws)
-    await ws.send_json(estado_atual())
+    difusor.adicionar(ws)
     try:
+        # Dentro do `try`: se o cliente cair aqui, o `finally` ainda o remove.
+        # Transmite para todos, não só para o recém-chegado: é o mesmo payload.
+        await difusor.transmitir()
         while True:
-            await ws.receive_json()
+            await ws.receive_text()
     except WebSocketDisconnect:
         pass
     finally:
-        _clientes.discard(ws)
+        difusor.remover(ws)
