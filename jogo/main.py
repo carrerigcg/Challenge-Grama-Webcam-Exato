@@ -163,14 +163,24 @@ async def ws_jogador(ws: WebSocket):
     difusor.adicionar(ws)
     try:
         while True:
-            msg = await ws.receive_json()
+            try:
+                msg = await ws.receive_json()
+            except ValueError:
+                # Texto que não é JSON. Não derruba o socket: a URL é pública
+                # e qualquer cliente pode mandar qualquer coisa.
+                await ws.send_json({"tipo": "erro", "mensagem": "Mensagem inválida."})
+                continue
+            if not isinstance(msg, dict):
+                await ws.send_json({"tipo": "erro", "mensagem": "Mensagem inválida."})
+                continue
             cmd = msg.get("cmd")
             try:
                 if cmd == "entrar":
-                    # `or ""` e não um default no get: um cliente que manda
-                    # "nome": null explicitamente faria str(None) == "None" e
-                    # entraria na sala com esse nome.
-                    jogador = sala.entrar(str(msg.get("nome") or ""))
+                    nome = msg.get("nome")
+                    if not isinstance(nome, str):
+                        # `str(["Ana"])` criaria um jogador chamado `['Ana']`.
+                        raise ErroDeJogo("Digite um nome.")
+                    jogador = sala.entrar(nome)
                     await ws.send_json(
                         {"tipo": "voce", "id": jogador.id, "nome": jogador.nome}
                     )
@@ -180,18 +190,19 @@ async def ws_jogador(ws: WebSocket):
                         {"tipo": "voce", "id": jogador.id, "nome": jogador.nome}
                     )
                 elif cmd == "chutar":
-                    sala.chutar_por_id(
-                        str(msg.get("id", "")), float(msg.get("valor_cm"))
-                    )
+                    try:
+                        valor = float(msg.get("valor_cm"))
+                    except (TypeError, ValueError, OverflowError):
+                        # `OverflowError` é um inteiro de 400 dígitos; sem ele
+                        # no except, o handler morre e o socket cai.
+                        raise ErroDeJogo("Digite um número.") from None
+                    sala.chutar_por_id(str(msg.get("id", "")), valor)
                 else:
                     # Comandos de host não existem neste socket: mandar na mão
                     # não faz nada.
                     raise ErroDeJogo("Comando desconhecido.")
             except ErroDeJogo as e:
                 await ws.send_json({"tipo": "erro", "mensagem": str(e)})
-                continue
-            except (TypeError, ValueError):
-                await ws.send_json({"tipo": "erro", "mensagem": "Digite um número."})
                 continue
             await difusor.transmitir()
     except WebSocketDisconnect:

@@ -165,18 +165,6 @@ def test_nome_repetido_devolve_erro_sem_derrubar_o_socket(client):
             assert segundo.receive_json()["tipo"] == "voce"
 
 
-def test_chute_nao_vaza_o_valor_no_estado(client):
-    with client.websocket_connect("/ws/jogador") as ws:
-        id_ana = _entrar(ws, "Ana")
-        ws.send_json({"cmd": "chutar", "id": id_ana, "valor_cm": 15.5})
-        estado = ws.receive_json()
-        assert estado["jogadores"][0]["chutou"] is True
-        assert estado["quantos_chutaram"] == 1
-        # O valor não pode estar em lugar nenhum do payload: todos olham a mesma
-        # tela grande e o último a chutar copiaria.
-        assert "15.5" not in str(estado)
-
-
 def test_chute_fora_da_faixa_devolve_erro(client):
     with client.websocket_connect("/ws/jogador") as ws:
         id_ana = _entrar(ws, "Ana")
@@ -222,27 +210,22 @@ def test_voltar_com_id_desconhecido_devolve_erro(client):
 
 
 @pytest.mark.parametrize("nome_torto", [None, 123, ["Ana"], {"a": 1}])
-def test_entrar_com_nome_de_tipo_errado_nao_derruba_o_socket(client, nome_torto):
+def test_entrar_com_nome_de_tipo_errado_e_recusado_sem_derrubar_o_socket(
+    client, nome_torto
+):
     """A URL é pública: o payload pode vir de qualquer cliente, não só do nosso.
 
-    O `str(... or "")` do handler transforma qualquer coisa em texto, e daí a
-    sala decide. O que não pode é a conexão morrer — um socket derrubado por
-    payload torto deixaria o visitante com a tela travada sem explicação.
+    Nome que não é texto é recusado: `str(["Ana"])` criaria um jogador chamado
+    `['Ana']`. E a conexão não pode morrer — um socket derrubado por payload
+    torto deixaria o visitante com a tela travada sem explicação.
     """
     with client.websocket_connect("/ws/jogador") as ws:
         ws.send_json({"cmd": "entrar", "nome": nome_torto})
         resposta = ws.receive_json()
-        assert resposta["tipo"] in ("voce", "erro")
-        # `None` cai no `or ""` e vira nome vazio, que a sala recusa.
-        if nome_torto is None:
-            assert resposta["tipo"] == "erro"
-        if resposta["tipo"] == "voce":
-            # Entrada aceita transmite o estado; sem consumir, a leitura
-            # seguinte pegaria esse broadcast em vez da resposta ao 2o comando.
-            assert ws.receive_json()["tipo"] == "estado"
+        assert resposta["tipo"] == "erro"
         # O socket continua utilizável depois da recusa.
         ws.send_json({"cmd": "entrar", "nome": "Ana"})
-        assert ws.receive_json()["tipo"] in ("voce", "erro")
+        assert ws.receive_json()["tipo"] == "voce"
 
 
 def test_payload_tem_exatamente_as_chaves_do_contrato(app):
@@ -275,18 +258,6 @@ def test_payload_esconde_o_ranking_antes_do_resultado(app):
 
     sala.revelacao_terminou(ticket)
     assert estado_atual()["ranking"][0]["nome"] == "Ana"
-
-
-def test_payload_nunca_traz_o_valor_do_chute(app):
-    from jogo.main import estado_atual, sala
-
-    id_ana = sala.entrar("Ana").id
-    sala.chutar_por_id(id_ana, 15.5)
-    payload = estado_atual()
-    assert payload["jogadores"][0]["chutou"] is True
-    assert payload["quantos_chutaram"] == 1
-    # Todos olham a mesma tela grande: o último a chutar copiaria o vizinho.
-    assert "15.5" not in str(payload)
 
 
 def test_comando_de_host_pelo_socket_de_jogador_nao_faz_nada(client):
@@ -326,3 +297,86 @@ def test_payload_nao_expoe_o_id_de_ninguem(app):
     for linha in payload["ranking"]:
         assert "id" not in linha
     assert jogador.id not in str(payload)
+
+
+@pytest.mark.parametrize("lixo", ['[1, 2]', '"abc"', '42', 'nao e json', '{'])
+def test_mensagem_torta_nao_derruba_o_socket_do_jogador(client, lixo):
+    """A URL é pública: qualquer cliente pode mandar qualquer coisa.
+
+    Socket derrubado deixa o visitante com a tela travada até o JS reconectar,
+    e enche o log de 1011.
+    """
+    with client.websocket_connect("/ws/jogador") as ws:
+        ws.send_text(lixo)
+        assert ws.receive_json()["tipo"] == "erro"
+        # E o socket continua utilizável.
+        ws.send_json({"cmd": "entrar", "nome": "Ana"})
+        assert ws.receive_json()["tipo"] == "voce"
+
+
+def test_chute_com_inteiro_gigante_nao_derruba_o_socket(client):
+    """`float()` de um inteiro de 400 dígitos levanta OverflowError."""
+    id_ana = _entrar(client_ws := client.websocket_connect("/ws/jogador").__enter__(), "Ana")
+    try:
+        client_ws.send_json({"cmd": "chutar", "id": id_ana, "valor_cm": int("9" * 400)})
+        assert client_ws.receive_json()["tipo"] == "erro"
+        client_ws.send_json({"cmd": "chutar", "id": id_ana, "valor_cm": 16.0})
+        assert client_ws.receive_json()["tipo"] == "estado"
+    finally:
+        client_ws.close()
+
+
+def test_entrar_com_nome_que_nao_e_texto_e_recusado(client):
+    with client.websocket_connect("/ws/jogador") as ws:
+        ws.send_json({"cmd": "entrar", "nome": ["Ana"]})
+        resposta = ws.receive_json()
+        assert resposta["tipo"] == "erro"
+        assert "nome" in resposta["mensagem"]
+
+
+def test_clientes_saem_do_difusor_ao_desconectar(client):
+    from jogo.main import difusor
+
+    assert difusor.quantos == 0
+    with client.websocket_connect("/ws/jogador"):
+        with client.websocket_connect("/ws/palco"):
+            assert difusor.quantos == 2
+    assert difusor.quantos == 0
+
+
+def test_texto_torto_no_palco_nao_derruba_o_socket(client):
+    """O palco não manda comando, mas a URL é pública: lixo não pode derrubá-lo."""
+    from jogo.main import difusor
+
+    with client.websocket_connect("/ws/palco") as palco:
+        palco.receive_json()
+        palco.send_text("nao e json")
+        with client.websocket_connect("/ws/jogador") as jogador:
+            jogador.send_json({"cmd": "entrar", "nome": "Ana"})
+            jogador.receive_json()
+            assert palco.receive_json()["jogadores"][0]["nome"] == "Ana"
+            assert difusor.quantos == 2
+
+
+def test_chute_nao_vaza_o_valor_no_estado(client):
+    with client.websocket_connect("/ws/jogador") as ws:
+        id_ana = _entrar(ws, "Ana")
+        ws.send_json({"cmd": "chutar", "id": id_ana, "valor_cm": 15.5})
+        estado = ws.receive_json()
+        assert estado["jogadores"][0]["chutou"] is True
+        assert estado["quantos_chutaram"] == 1
+        # O valor não pode estar em lugar nenhum do payload: todos olham a mesma
+        # tela grande e o último a chutar copiaria.
+        assert "15.5" not in str(estado)
+
+
+def test_payload_nunca_traz_o_valor_do_chute(app):
+    from jogo.main import estado_atual, sala
+
+    id_ana = sala.entrar("Ana").id
+    sala.chutar_por_id(id_ana, 15.5)
+    payload = estado_atual()
+    assert payload["jogadores"][0]["chutou"] is True
+    assert payload["quantos_chutaram"] == 1
+    # Todos olham a mesma tela grande: o último a chutar copiaria o vizinho.
+    assert "15.5" not in str(payload)
