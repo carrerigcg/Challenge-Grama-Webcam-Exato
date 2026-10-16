@@ -1231,19 +1231,28 @@ async def test_medir_recusa_medicao_concorrente():
     medidor = Medidor()
     canal = CanalFalso()
     medidor.conectar(canal)
+    erro_da_segunda = []
 
     async def segunda_chamada():
         while not canal.ordens:  # espera a primeira ordem sair
             await asyncio.sleep(0)
-        with pytest.raises(ErroDeMedicao, match="em andamento"):
+        try:
             await medidor.medir()
+        except ErroDeMedicao as e:
+            erro_da_segunda.append(str(e))
+        # Completa a primeira medição em qualquer caso: se a asserção morasse
+        # aqui dentro e falhasse, a exceção ficaria engolida na task, o
+        # `entregar_resultado` não rodaria, e o teste só falharia 30s depois
+        # com a mensagem errada ("demorou"). Asserção fica no corpo principal.
         medidor.entregar_resultado({"altura_cm": 17.5})
 
     asyncio.create_task(segunda_chamada())
     resultado = await medidor.medir()
+
     assert resultado["altura_cm"] == 17.5
     # Uma ordem só saiu: a segunda nem chegou ao canal.
     assert canal.ordens == [{"cmd": "medir"}]
+    assert erro_da_segunda and "em andamento" in erro_da_segunda[0]
 
 
 async def test_desconectar_canal_antigo_nao_derruba_o_atual():
