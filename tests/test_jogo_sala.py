@@ -472,3 +472,59 @@ def test_ranking_desempata_por_ordem_reatribuida_na_edicao():
     # Mexer no chute custa a vantagem do desempate mesmo sem mudar o número.
     # É a interação entre a regra de edição (Task 2) e o ranking (Task 3).
     assert [linha["nome"] for linha in sala.ranking()] == ["Bruno", "Ana"]
+
+
+def test_nova_rodada_limpa_tudo_e_reabre():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    sala.definir_trava(True)
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", "iVBOR")
+    sala.revelacao_terminou(ticket)
+
+    sala.nova_rodada()
+
+    assert sala.estado is Estado.AGUARDANDO
+    assert sala.jogadores == []
+    assert sala.altura_cm is None
+    assert sala.margem_cm is None
+    assert sala.categoria is None
+    assert sala.imagem_b64 is None
+    assert sala.erro is None
+    assert sala.ranking() == []
+    # Reabrir é proposital: esquecer a sala travada entre dois grupos deixa o
+    # grupo seguinte sem entrar e sem saber por quê.
+    assert sala.aberta is True
+
+
+@pytest.mark.parametrize("estado_antes", list(Estado))
+def test_nova_rodada_funciona_de_qualquer_estado(estado_antes):
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    sala.estado = estado_antes  # força o estado: é a válvula de escape do host
+    sala.nova_rodada()
+    assert sala.estado is Estado.AGUARDANDO
+
+
+def test_nova_rodada_permite_entrar_de_novo_com_o_mesmo_nome():
+    sala, _ = _sala_com("Ana")
+    sala.nova_rodada()
+    assert sala.entrar("Ana").nome == "Ana"
+
+
+def test_nova_rodada_descarta_a_medicao_em_voo():
+    """A corrida real da feira: grupo vai embora durante a medição."""
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    ticket = sala.iniciar_medicao()
+
+    sala.nova_rodada()
+    id_bruno = sala.entrar("Bruno").id
+    sala.chutar_por_id(id_bruno, 50.0)
+
+    # A câmera responde agora, com a medida do grupo que já foi embora.
+    assert sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", None) is False
+    assert sala.estado is Estado.AGUARDANDO
+    assert sala.altura_cm is None
+    # O Bruno não pode ser coroado contra uma medida que não é dele.
+    assert sala.ranking() == []

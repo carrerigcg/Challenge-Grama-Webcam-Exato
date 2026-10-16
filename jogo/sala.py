@@ -205,6 +205,20 @@ class Sala:
         self.estado = Estado.AGUARDANDO
         return True
 
+    def nova_rodada(self) -> None:
+        """Zera a sala. Vale de qualquer estado: é a válvula de escape do host."""
+        self.jogadores = []
+        self._limpar_resultado()
+        self.erro = None
+        self._proxima_ordem = 0
+        # Invalida a medição em voo. Sem isto, a resposta da câmera de uma
+        # rodada que o apresentador acabou de resetar entraria na sala nova —
+        # com jogadores novos chutando contra a altura velha, o ranking fica
+        # plausível e falso.
+        self._medicao += 1
+        self.aberta = True
+        self.estado = Estado.AGUARDANDO
+
     def _limpar_resultado(self) -> None:
         """Apaga o resultado da rodada anterior.
 
