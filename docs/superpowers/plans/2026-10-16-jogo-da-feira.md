@@ -2880,7 +2880,22 @@ async def ws_host(ws: WebSocket, token: str | None = None):
     await ws.send_json(estado_atual())
     try:
         while True:
-            msg = await ws.receive_json()
+            # Mesma blindagem do socket de jogador: a revisão da Task 7
+            # reproduziu que texto não-JSON e mensagem que não é objeto matam
+            # o handler. Aqui o estrago seria pior — o apresentador perde o
+            # controle do jogo no meio da apresentação.
+            try:
+                msg = await ws.receive_json()
+            except ValueError:
+                await ws.send_json(
+                    {"tipo": "erro", "mensagem": "Mensagem inválida."}
+                )
+                continue
+            if not isinstance(msg, dict):
+                await ws.send_json(
+                    {"tipo": "erro", "mensagem": "Mensagem inválida."}
+                )
+                continue
             cmd = msg.get("cmd")
             try:
                 if cmd == "medir":
@@ -2930,7 +2945,15 @@ async def ws_ponte(ws: WebSocket, token: str | None = None):
     await difusor.transmitir()  # acende o semáforo no palco
     try:
         while True:
-            msg = await ws.receive_json()
+            try:
+                msg = await ws.receive_json()
+            except ValueError:
+                # A ponte é nosso código e não lê resposta do servidor, então
+                # mandar erro de volta não serve. Ignora e segue vivo: derrubar
+                # o socket apagaria o semáforo do palco por causa de um frame.
+                continue
+            if not isinstance(msg, dict):
+                continue
             if msg.get("tipo") == "resultado":
                 medidor.entregar_resultado(msg)
             elif msg.get("tipo") == "erro":
