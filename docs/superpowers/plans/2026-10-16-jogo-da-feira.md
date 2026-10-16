@@ -933,7 +933,6 @@ E estes métodos dentro de `Sala`, abaixo de `quantos_chutaram`:
         return [
             {
                 "posicao": i + 1,
-                "id": j.id,
                 "nome": j.nome,
                 "chute_cm": j.chute_cm,
                 "erro_cm": self._erro_arredondado(j),
@@ -1961,13 +1960,243 @@ git commit -m "feat(jogo): app com token de host e QR gerado no servidor"
 
 ---
 
-## Task 7: WebSocket dos jogadores e broadcast
+## Task 7: Difusor, WebSocket dos jogadores e broadcast
 
 **Files:**
+- Create: `jogo/difusor.py`
+- Create: `tests/test_jogo_difusor.py`
 - Modify: `jogo/main.py`
 - Test: `tests/test_jogo_api.py`
 
-- [ ] **Step 1: Escrever os testes que falham**
+O broadcast ganhou módulo próprio depois da revisão desta task. O motivo é
+concorrência: um lock para o payload velho não chegar depois do novo, um
+timeout por cliente para um celular travado no 4G da feira não parar o
+broadcast dos outros, e uma serialização só — com `allow_nan=False`, para NaN
+falhar alto em vez de virar o token que o `JSON.parse` de todos os navegadores
+rejeita de uma vez. Isso precisa de teste com socket falso e instância limpa
+por caso, o que um set global de módulo não dá.
+
+- [ ] **Step 1: Escrever os testes do difusor, que falham**
+
+Crie `tests/test_jogo_difusor.py`:
+
+```python
+"""O difusor: lock, timeout por cliente e serialização única.
+
+Com sockets falsos e instância limpa por caso — é o motivo de o difusor ser
+uma classe e não um set de módulo.
+"""
+import asyncio
+
+import pytest
+
+from jogo.difusor import Difusor
+
+pytestmark = pytest.mark.asyncio
+
+
+class ClienteFalso:
+    def __init__(self):
+        self.recebidos = []
+
+    async def send_text(self, texto):
+        self.recebidos.append(texto)
+
+
+class ClienteMorto:
+    async def send_text(self, texto):
+        raise RuntimeError("socket fechado")
+
+
+class ClienteLento:
+    def __init__(self, demora):
+        self.demora = demora
+        self.recebidos = []
+
+    async def send_text(self, texto):
+        await asyncio.sleep(self.demora)
+        self.recebidos.append(texto)
+
+
+async def test_todos_recebem_o_mesmo_texto():
+    difusor = Difusor(lambda: {"estado": "AGUARDANDO"})
+    a, b = ClienteFalso(), ClienteFalso()
+    difusor.adicionar(a)
+    difusor.adicionar(b)
+    await difusor.transmitir()
+    assert a.recebidos == b.recebidos
+    assert '"AGUARDANDO"' in a.recebidos[0]
+
+
+async def test_socket_morto_sai_do_set_e_os_outros_recebem():
+    difusor = Difusor(lambda: {"estado": "AGUARDANDO"})
+    vivo, morto = ClienteFalso(), ClienteMorto()
+    difusor.adicionar(vivo)
+    difusor.adicionar(morto)
+    await difusor.transmitir()
+    assert len(vivo.recebidos) == 1
+    assert difusor.quantos == 1
+
+
+async def test_cliente_lento_nao_trava_o_grupo():
+    """Celular com buffer cheio no 4G da feira não pode parar o broadcast."""
+    difusor = Difusor(lambda: {"estado": "AGUARDANDO"}, timeout_s=0.02)
+    rapido, lento = ClienteFalso(), ClienteLento(0.5)
+    difusor.adicionar(rapido)
+    difusor.adicionar(lento)
+    await difusor.transmitir()
+    assert len(rapido.recebidos) == 1
+    assert lento.recebidos == []
+    assert difusor.quantos == 1
+
+
+async def test_payload_invalido_loga_e_nao_descarta_ninguem():
+    """Payload inválido é bug nosso: descartar deixaria todos mudos sem rastro."""
+    difusor = Difusor(lambda: {"altura_cm": float("nan")})
+    a = ClienteFalso()
+    difusor.adicionar(a)
+    await difusor.transmitir()
+    assert a.recebidos == []
+    # O cliente continua no set: na próxima transmissão válida ele recebe.
+    assert difusor.quantos == 1
+
+
+class ClienteDecrescente:
+    """Primeiro envio lento, segundo instantâneo.
+
+    É o que discrimina o lock: sem ele, a segunda transmissão passa na frente
+    da primeira e o cliente recebe o payload velho DEPOIS do novo. Com os dois
+    envios na mesma demora, a ordem sai certa por acidente e o teste não prova
+    nada — foi o defeito da primeira versão deste teste.
+    """
+
+    def __init__(self):
+        self.demoras = [0.05, 0.0]
+        self.recebidos = []
+
+    async def send_text(self, texto):
+        await asyncio.sleep(self.demoras.pop(0))
+        self.recebidos.append(texto)
+
+
+async def test_transmissoes_concorrentes_chegam_em_ordem():
+    """Sem o lock, o payload velho chega DEPOIS do novo, e o celular fica com
+    a tela de uma rodada que já passou."""
+    estado = {"n": 0}
+    difusor = Difusor(lambda: dict(estado))
+    cliente = ClienteDecrescente()
+    difusor.adicionar(cliente)
+
+    estado["n"] = 1
+    primeira = asyncio.create_task(difusor.transmitir())
+    await asyncio.sleep(0)  # deixa a primeira montar e entrar no envio
+    estado["n"] = 2
+    segunda = asyncio.create_task(difusor.transmitir())
+    await asyncio.gather(primeira, segunda)
+
+    assert cliente.recebidos == ['{"n": 1}', '{"n": 2}']
+```
+
+- [ ] **Step 2: Rodar e confirmar que falha**
+
+Run: `python -m pytest tests/test_jogo_difusor.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'jogo.difusor'`
+
+- [ ] **Step 3: Implementar o difusor**
+
+Crie `jogo/difusor.py`:
+
+```python
+"""Quem está conectado e o que eles recebem.
+
+Separado do `main.py` porque a concorrência do broadcast mora aqui — um lock,
+um timeout por cliente, uma serialização só — e isso precisa de teste com
+socket falso e instância limpa por caso. A Task 8 multiplica os chamadores de
+`transmitir`, e concorrência espalhada por handlers é o que não se testa
+depois.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from typing import Callable, Protocol
+
+# 2s por cliente. Celular com buffer TCP cheio no 4G da feira não pode travar
+# o broadcast dos outros; quem estoura sai do set e volta na reconexão.
+TIMEOUT_ENVIO_S = 2.0
+
+_log = logging.getLogger(__name__)
+
+
+class Cliente(Protocol):
+    async def send_text(self, texto: str) -> None: ...
+
+
+class Difusor:
+    """Mantém o set de clientes e entrega o mesmo texto para todos."""
+
+    def __init__(
+        self, montar: Callable[[], dict], timeout_s: float = TIMEOUT_ENVIO_S
+    ):
+        self._montar = montar
+        self._timeout_s = timeout_s
+        self._clientes: set[Cliente] = set()
+        # Serializa montagem e envio. Sem o lock, duas transmissões
+        # concorrentes podem entregar o payload velho DEPOIS do novo, e um
+        # celular fica com a tela de uma rodada que já passou.
+        self._porta = asyncio.Lock()
+
+    def adicionar(self, cliente: Cliente) -> None:
+        self._clientes.add(cliente)
+
+    def remover(self, cliente: Cliente) -> None:
+        self._clientes.discard(cliente)
+
+    @property
+    def quantos(self) -> int:
+        return len(self._clientes)
+
+    async def transmitir(self) -> None:
+        async with self._porta:
+            try:
+                # Uma serialização só. `allow_nan=False` faz NaN falhar aqui,
+                # em vez de virar o token `NaN` que o JSON.parse de TODOS os
+                # navegadores rejeita de uma vez.
+                texto = json.dumps(self._montar(), allow_nan=False)
+            except (TypeError, ValueError):
+                # Payload inválido é bug nosso, não socket morto: loga e não
+                # descarta ninguém. Descartar deixaria os cinco celulares
+                # conectados e mudos, sem rastro nenhum.
+                _log.exception("payload inválido; nada foi transmitido")
+                return
+            for cliente in list(self._clientes):
+                try:
+                    await asyncio.wait_for(
+                        cliente.send_text(texto), timeout=self._timeout_s
+                    )
+                except Exception:
+                    # Socket morto, ou lento demais para o grupo esperar. Sai
+                    # do set; o `finally` do handler também remove, e descartar
+                    # duas vezes de um set não custa nada.
+                    self._clientes.discard(cliente)
+```
+
+Run: `python -m pytest tests/test_jogo_difusor.py -v` → **5 passed**.
+
+**Mutação obrigatória, duas.** Sem commitar a sabotagem:
+- Troque `async with self._porta:` por `if True:`. O
+  `test_transmissoes_concorrentes_chegam_em_ordem` tem de **falhar**. Restaure.
+- Troque o `except (TypeError, ValueError)` da serialização por `except
+  Exception:` com `self._clientes.clear()` no corpo. O
+  `test_payload_invalido_loga_e_nao_descarta_ninguem` tem de **falhar**. Restaure.
+
+A primeira versão do teste de ordem era decoração: usava o mesmo cliente lento
+nas duas transmissões, então a ordem saía certa por acidente mesmo sem o lock.
+O `ClienteDecrescente` (primeiro envio lento, segundo instantâneo) é o que
+discrimina.
+
+- [ ] **Step 4: Escrever os testes dos WebSockets, que falham**
 
 Acrescente ao fim de `tests/test_jogo_api.py`:
 
@@ -2012,18 +2241,6 @@ def test_nome_repetido_devolve_erro_sem_derrubar_o_socket(client):
             # O socket continua vivo: dá pra tentar outro nome.
             segundo.send_json({"cmd": "entrar", "nome": "Bruno"})
             assert segundo.receive_json()["tipo"] == "voce"
-
-
-def test_chute_nao_vaza_o_valor_no_estado(client):
-    with client.websocket_connect("/ws/jogador") as ws:
-        id_ana = _entrar(ws, "Ana")
-        ws.send_json({"cmd": "chutar", "id": id_ana, "valor_cm": 15.5})
-        estado = ws.receive_json()
-        assert estado["jogadores"][0]["chutou"] is True
-        assert estado["quantos_chutaram"] == 1
-        # O valor não pode estar em lugar nenhum do payload: todos olham a mesma
-        # tela grande e o último a chutar copiaria.
-        assert "15.5" not in str(estado)
 
 
 def test_chute_fora_da_faixa_devolve_erro(client):
@@ -2071,27 +2288,22 @@ def test_voltar_com_id_desconhecido_devolve_erro(client):
 
 
 @pytest.mark.parametrize("nome_torto", [None, 123, ["Ana"], {"a": 1}])
-def test_entrar_com_nome_de_tipo_errado_nao_derruba_o_socket(client, nome_torto):
+def test_entrar_com_nome_de_tipo_errado_e_recusado_sem_derrubar_o_socket(
+    client, nome_torto
+):
     """A URL é pública: o payload pode vir de qualquer cliente, não só do nosso.
 
-    O `str(... or "")` do handler transforma qualquer coisa em texto, e daí a
-    sala decide. O que não pode é a conexão morrer — um socket derrubado por
-    payload torto deixaria o visitante com a tela travada sem explicação.
+    Nome que não é texto é recusado: `str(["Ana"])` criaria um jogador chamado
+    `['Ana']`. E a conexão não pode morrer — um socket derrubado por payload
+    torto deixaria o visitante com a tela travada sem explicação.
     """
     with client.websocket_connect("/ws/jogador") as ws:
         ws.send_json({"cmd": "entrar", "nome": nome_torto})
         resposta = ws.receive_json()
-        assert resposta["tipo"] in ("voce", "erro")
-        # `None` cai no `or ""` e vira nome vazio, que a sala recusa.
-        if nome_torto is None:
-            assert resposta["tipo"] == "erro"
-        if resposta["tipo"] == "voce":
-            # Entrada aceita transmite o estado; sem consumir, a leitura
-            # seguinte pegaria esse broadcast em vez da resposta ao 2o comando.
-            assert ws.receive_json()["tipo"] == "estado"
+        assert resposta["tipo"] == "erro"
         # O socket continua utilizável depois da recusa.
         ws.send_json({"cmd": "entrar", "nome": "Ana"})
-        assert ws.receive_json()["tipo"] in ("voce", "erro")
+        assert ws.receive_json()["tipo"] == "voce"
 
 
 def test_payload_tem_exatamente_as_chaves_do_contrato(app):
@@ -2126,18 +2338,6 @@ def test_payload_esconde_o_ranking_antes_do_resultado(app):
     assert estado_atual()["ranking"][0]["nome"] == "Ana"
 
 
-def test_payload_nunca_traz_o_valor_do_chute(app):
-    from jogo.main import estado_atual, sala
-
-    id_ana = sala.entrar("Ana").id
-    sala.chutar_por_id(id_ana, 15.5)
-    payload = estado_atual()
-    assert payload["jogadores"][0]["chutou"] is True
-    assert payload["quantos_chutaram"] == 1
-    # Todos olham a mesma tela grande: o último a chutar copiaria o vizinho.
-    assert "15.5" not in str(payload)
-
-
 def test_comando_de_host_pelo_socket_de_jogador_nao_faz_nada(client):
     from jogo.main import sala as sala_do_app
 
@@ -2152,23 +2352,133 @@ def test_comando_de_host_pelo_socket_de_jogador_nao_faz_nada(client):
         assert sala_do_app.estado.value == "AGUARDANDO"
         assert sala_do_app.aberta is True
         assert len(sala_do_app.jogadores) == 1
+
+
+def test_payload_nao_expoe_o_id_de_ninguem(app):
+    """O `id` é credencial: o `chutar` e o `voltar` o exigem.
+
+    No broadcast, qualquer visitante com a aba Rede aberta leria o id dos
+    outros e chutaria em nome deles. Ele chega só no frame `voce`, que vai
+    para um socket só.
+    """
+    from jogo.main import estado_atual, sala
+
+    jogador = sala.entrar("Ana")
+    sala.chutar_por_id(jogador.id, 16.0)
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", None)
+    sala.revelacao_terminou(ticket)
+
+    payload = estado_atual()
+    assert payload["jogadores"] == [{"nome": "Ana", "chutou": True}]
+    assert payload["ranking"], "o ranking deveria estar preenchido em RESULTADO"
+    for linha in payload["ranking"]:
+        assert "id" not in linha
+    assert jogador.id not in str(payload)
+
+
+@pytest.mark.parametrize("lixo", ['[1, 2]', '"abc"', '42', 'nao e json', '{'])
+def test_mensagem_torta_nao_derruba_o_socket_do_jogador(client, lixo):
+    """A URL é pública: qualquer cliente pode mandar qualquer coisa.
+
+    Socket derrubado deixa o visitante com a tela travada até o JS reconectar,
+    e enche o log de 1011.
+    """
+    with client.websocket_connect("/ws/jogador") as ws:
+        ws.send_text(lixo)
+        assert ws.receive_json()["tipo"] == "erro"
+        # E o socket continua utilizável.
+        ws.send_json({"cmd": "entrar", "nome": "Ana"})
+        assert ws.receive_json()["tipo"] == "voce"
+
+
+def test_chute_com_inteiro_gigante_nao_derruba_o_socket(client):
+    """`float()` de um inteiro de 400 dígitos levanta OverflowError."""
+    id_ana = _entrar(client_ws := client.websocket_connect("/ws/jogador").__enter__(), "Ana")
+    try:
+        client_ws.send_json({"cmd": "chutar", "id": id_ana, "valor_cm": int("9" * 400)})
+        assert client_ws.receive_json()["tipo"] == "erro"
+        client_ws.send_json({"cmd": "chutar", "id": id_ana, "valor_cm": 16.0})
+        assert client_ws.receive_json()["tipo"] == "estado"
+    finally:
+        client_ws.close()
+
+
+def test_entrar_com_nome_que_nao_e_texto_e_recusado(client):
+    with client.websocket_connect("/ws/jogador") as ws:
+        ws.send_json({"cmd": "entrar", "nome": ["Ana"]})
+        resposta = ws.receive_json()
+        assert resposta["tipo"] == "erro"
+        assert "nome" in resposta["mensagem"]
+
+
+def test_clientes_saem_do_difusor_ao_desconectar(client):
+    from jogo.main import difusor
+
+    assert difusor.quantos == 0
+    with client.websocket_connect("/ws/jogador"):
+        with client.websocket_connect("/ws/palco"):
+            assert difusor.quantos == 2
+    assert difusor.quantos == 0
+
+
+def test_payload_nunca_traz_o_valor_do_chute(app):
+    """Prova estrutural, não textual.
+
+    `"13.37" not in str(payload)` passaria com o valor saindo arredondado, ou
+    como string com vírgula. O que garante é cada jogador ter exatamente as
+    chaves do contrato — nada a mais.
+    """
+    from jogo.main import estado_atual, sala
+
+    jogador = sala.entrar("Ana")
+    sala.chutar_por_id(jogador.id, 13.37)
+    payload = estado_atual()
+
+    for linha in payload["jogadores"]:
+        assert set(linha) == {"nome", "chutou"}
+    assert payload["quantos_chutaram"] == 1
+
+    # Cinto, além da prova estrutural: nenhum escalar do payload parece o chute.
+    def escalares(valor):
+        if isinstance(valor, dict):
+            for v in valor.values():
+                yield from escalares(v)
+        elif isinstance(valor, list):
+            for v in valor:
+                yield from escalares(v)
+        else:
+            yield valor
+
+    assert 13.37 not in list(escalares(payload))
+    assert "13.37" not in str(payload) and "13,37" not in str(payload)
+
+
+def test_texto_torto_no_palco_nao_derruba_o_socket(client):
+    """O palco não manda comando, mas a URL é pública: lixo não pode derrubá-lo."""
+    from jogo.main import difusor
+
+    with client.websocket_connect("/ws/palco") as palco:
+        palco.receive_json()
+        palco.send_text("nao e json")
+        with client.websocket_connect("/ws/jogador") as jogador:
+            jogador.send_json({"cmd": "entrar", "nome": "Ana"})
+            jogador.receive_json()
+            assert palco.receive_json()["jogadores"][0]["nome"] == "Ana"
+            assert difusor.quantos == 2
 ```
 
-- [ ] **Step 2: Rodar e confirmar que falha**
+- [ ] **Step 5: Rodar e confirmar que falha**
 
-Run: `python -m pytest tests/test_jogo_api.py -k jogador -v`
-Expected: FAIL — a rota `/ws/jogador` não existe, o handshake é recusado
+Run: `python -m pytest tests/test_jogo_api.py -v`
+Expected: FAIL — as rotas `/ws/jogador` e `/ws/palco` não existem, o handshake é recusado
 
-- [ ] **Step 3: Implementar**
+- [ ] **Step 6: Implementar**
 
-Nos imports no topo de `jogo/main.py`, troque a linha de `Sala` e acrescente a
-de WebSocket:
-
-```python
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-
-from jogo.sala import ErroDeJogo, Estado, Sala
-```
+Nos imports no topo de `jogo/main.py`, acrescente `WebSocket` e
+`WebSocketDisconnect` ao import do FastAPI, troque o import da sala para
+`from jogo.sala import ErroDeJogo, Estado, Sala`, e acrescente
+`from jogo.difusor import Difusor`.
 
 E acrescente ao fim do arquivo:
 
@@ -2177,7 +2487,6 @@ E acrescente ao fim do arquivo:
 
 # Todos os clientes recebem o MESMO payload. Nenhum tem versão especial: é o que
 # mantém o broadcast trivial e impede vazamento acidental de chute.
-_clientes: set[WebSocket] = set()
 
 
 def estado_atual() -> dict:
@@ -2186,8 +2495,12 @@ def estado_atual() -> dict:
         "estado": sala.estado.value,
         "aberta": sala.aberta,
         "ponte_conectada": medidor.conectado,
+        # Sem o `id`: ele é a credencial que o `chutar` e o `voltar` exigem, e
+        # no broadcast qualquer visitante com a aba Rede aberta chutaria em
+        # nome de outro. O celular acha a própria linha pelo `nome`, que a
+        # sala garante único por rodada.
         "jogadores": [
-            {"id": j.id, "nome": j.nome, "chutou": j.chute_cm is not None}
+            {"nome": j.nome, "chutou": j.chute_cm is not None}
             for j in sala.jogadores
         ],
         "quantos_chutaram": sala.quantos_chutaram(),
@@ -2205,15 +2518,8 @@ def estado_atual() -> dict:
     }
 
 
-async def transmitir() -> None:
-    payload = estado_atual()
-    for cliente in list(_clientes):
-        try:
-            await cliente.send_json(payload)
-        except Exception:
-            # Socket morto sai daqui; o `finally` do handler também remove, e
-            # descartar duas vezes de um set não custa nada.
-            _clientes.discard(cliente)
+# Declarado depois de `estado_atual`, porque recebe a referência dela.
+difusor = Difusor(estado_atual)
 
 
 # --- WebSocket dos jogadores -------------------------------------------------
@@ -2222,17 +2528,27 @@ async def transmitir() -> None:
 @app.websocket("/ws/jogador")
 async def ws_jogador(ws: WebSocket):
     await ws.accept()
-    _clientes.add(ws)
+    difusor.adicionar(ws)
     try:
         while True:
-            msg = await ws.receive_json()
+            try:
+                msg = await ws.receive_json()
+            except ValueError:
+                # Texto que não é JSON. Não derruba o socket: a URL é pública
+                # e qualquer cliente pode mandar qualquer coisa.
+                await ws.send_json({"tipo": "erro", "mensagem": "Mensagem inválida."})
+                continue
+            if not isinstance(msg, dict):
+                await ws.send_json({"tipo": "erro", "mensagem": "Mensagem inválida."})
+                continue
             cmd = msg.get("cmd")
             try:
                 if cmd == "entrar":
-                    # `or ""` e não um default no get: um cliente que manda
-                    # "nome": null explicitamente faria str(None) == "None" e
-                    # entraria na sala com esse nome.
-                    jogador = sala.entrar(str(msg.get("nome") or ""))
+                    nome = msg.get("nome")
+                    if not isinstance(nome, str):
+                        # `str(["Ana"])` criaria um jogador chamado `['Ana']`.
+                        raise ErroDeJogo("Digite um nome.")
+                    jogador = sala.entrar(nome)
                     await ws.send_json(
                         {"tipo": "voce", "id": jogador.id, "nome": jogador.nome}
                     )
@@ -2242,9 +2558,13 @@ async def ws_jogador(ws: WebSocket):
                         {"tipo": "voce", "id": jogador.id, "nome": jogador.nome}
                     )
                 elif cmd == "chutar":
-                    sala.chutar_por_id(
-                        str(msg.get("id", "")), float(msg.get("valor_cm"))
-                    )
+                    try:
+                        valor = float(msg.get("valor_cm"))
+                    except (TypeError, ValueError, OverflowError):
+                        # `OverflowError` é um inteiro de 400 dígitos; sem ele
+                        # no except, o handler morre e o socket cai.
+                        raise ErroDeJogo("Digite um número.") from None
+                    sala.chutar_por_id(str(msg.get("id", "")), valor)
                 else:
                     # Comandos de host não existem neste socket: mandar na mão
                     # não faz nada.
@@ -2252,14 +2572,11 @@ async def ws_jogador(ws: WebSocket):
             except ErroDeJogo as e:
                 await ws.send_json({"tipo": "erro", "mensagem": str(e)})
                 continue
-            except (TypeError, ValueError):
-                await ws.send_json({"tipo": "erro", "mensagem": "Digite um número."})
-                continue
-            await transmitir()
+            await difusor.transmitir()
     except WebSocketDisconnect:
         pass
     finally:
-        _clientes.discard(ws)
+        difusor.remover(ws)
 
 
 # --- WebSocket do palco ------------------------------------------------------
@@ -2269,27 +2586,43 @@ async def ws_jogador(ws: WebSocket):
 async def ws_palco(ws: WebSocket):
     """Palco sem token: só observa. Os comandos vivem em `/ws/host`."""
     await ws.accept()
-    _clientes.add(ws)
-    await ws.send_json(estado_atual())
+    difusor.adicionar(ws)
     try:
+        # Dentro do `try`: se o cliente cair aqui, o `finally` ainda o remove.
+        # Transmite para todos, não só para o recém-chegado: é o mesmo payload.
+        await difusor.transmitir()
         while True:
-            await ws.receive_json()
+            await ws.receive_text()
     except WebSocketDisconnect:
         pass
     finally:
-        _clientes.discard(ws)
+        difusor.remover(ws)
 ```
 
-- [ ] **Step 4: Rodar os testes**
+Três coisas no handler do jogador que vieram da revisão, e que **não** são
+defensividade gratuita — a revisão reproduziu os três crashes:
 
-Run: `python -m pytest tests/test_jogo_api.py -v`
-Expected: PASS nos 29 testes.
+- `isinstance(msg, dict)` e `except ValueError` no `receive_json`: mensagem que
+  não é objeto (`[1,2]`, `"abc"`) ou texto que não é JSON matavam o handler, e
+  o socket do visitante caía.
+- `OverflowError` no `except` do `float()`: `valor_cm` com um inteiro de 400
+  dígitos mata o handler sem ele.
+- `isinstance(nome, str)`: sem isso, `str(["Ana"])` criava um jogador chamado
+  `['Ana']`.
 
-- [ ] **Step 5: Commit**
+E o palco usa `receive_text()`, não `receive_json()`: o palco não manda
+comando, e `receive_json` ali derruba o socket com qualquer texto inválido.
+
+- [ ] **Step 7: Rodar os testes**
+
+Run: `python -m pytest tests/test_jogo_api.py -v` → **38 passed**.
+Run: `python -m pytest tests/test_jogo_difusor.py -v` → **5 passed**.
+
+- [ ] **Step 8: Commit**
 
 ```bash
-git add jogo/main.py tests/test_jogo_api.py
-git commit -m "feat(jogo): websocket de jogador e palco com broadcast de estado"
+git add jogo/difusor.py jogo/main.py tests/test_jogo_difusor.py tests/test_jogo_api.py
+git commit -m "feat(jogo): difusor com lock e websocket de jogador e palco"
 ```
 
 ---
