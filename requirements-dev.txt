@@ -1,4 +1,7 @@
 -r requirements-api.txt
 pytest
 httpx
-pytest-asyncio
+# Com pin, ao contrário do resto do arquivo: é a única dependência cujo
+# comportamento muda a semântica de configuração (modos, escopo de loop), e
+# isso já mudou entre a 0.x e a 1.x.
+pytest-asyncio>=1.0
