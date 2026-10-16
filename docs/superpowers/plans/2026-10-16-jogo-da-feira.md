@@ -85,9 +85,12 @@ Crie `tests/test_jogo_sala.py`:
 Sem fixtures de banco de propósito: o jogo não tem persistência. A sala é um
 dataclass em memória e estes testes são aritmética de estado, não integração.
 """
+import ast
+from pathlib import Path
+
 import pytest
 
-from jogo.sala import MAX_JOGADORES, ErroDeJogo, Estado, Sala
+from jogo.sala import MAX_JOGADORES, MAX_NOME, ErroDeJogo, Estado, Sala
 
 
 def test_sala_nasce_aguardando_e_aberta():
@@ -116,7 +119,7 @@ def test_entrar_gera_ids_diferentes():
 def test_entrar_recusa_nome_vazio_ou_em_branco():
     sala = Sala()
     for nome in ("", "   ", "\t"):
-        with pytest.raises(ErroDeJogo, match="nome"):
+        with pytest.raises(ErroDeJogo, match="Digite"):
             sala.entrar(nome)
 
 
@@ -128,7 +131,9 @@ def test_entrar_corta_espacos_em_volta_do_nome():
 def test_entrar_recusa_nome_repetido_ignorando_caixa():
     sala = Sala()
     sala.entrar("Ana")
-    with pytest.raises(ErroDeJogo, match="nome"):
+    # Asserts distintos de propósito: as duas mensagens contêm "nome", então um
+    # match="nome" nos dois não detectaria erro trocado entre os casos.
+    with pytest.raises(ErroDeJogo, match="já está em uso"):
         sala.entrar("ana")
 
 
@@ -150,11 +155,60 @@ def test_entrar_recusa_quando_a_sala_esta_travada():
 def test_entrar_recusa_fora_de_aguardando():
     sala = Sala()
     sala.entrar("Ana")
-    sala.chutar_por_id(sala.jogadores[0].id, 10.0)
-    sala.iniciar_medicao()
+    # Força o estado em vez de passar por chutar/iniciar_medicao: este teste é
+    # sobre a recusa da entrada, não sobre como a sala chegou em MEDINDO. Assim
+    # ele não depende de métodos que só nascem nas Tasks 2 e 3, e a branch
+    # fecha verde neste commit.
+    sala.estado = Estado.MEDINDO
     with pytest.raises(ErroDeJogo, match="andamento"):
         sala.entrar("Bruno")
+
+
+def test_entrar_aceita_nome_no_limite():
+    sala = Sala()
+    nome = "A" * MAX_NOME
+    assert sala.entrar(nome).nome == nome
+
+
+def test_entrar_recusa_nome_longo_demais():
+    sala = Sala()
+    with pytest.raises(ErroDeJogo, match="muito longo"):
+        sala.entrar("A" * (MAX_NOME + 1))
+
+
+# O que `jogo/sala.py` pode importar. Allowlist, não blocklist: um módulo novo
+# de I/O não entra sozinho na lista.
+IMPORTS_PERMITIDOS = {"__future__", "math", "secrets", "dataclasses", "enum"}
+
+
+def test_sala_nao_ganha_io_sem_ninguem_notar():
+    """Guarda da fronteira que o spec declara: a sala não fala com o mundo.
+
+    A suíte inteira roda sem webcam e sem rede por causa disso. Um `import
+    requests` acrescentado sem pensar dissolveria a garantia em silêncio — e
+    doze tasks vão passar perto deste arquivo. Docstring avisa; teste impede.
+    """
+    codigo = (Path(__file__).parent.parent / "jogo" / "sala.py").read_text(
+        encoding="utf-8"
+    )
+    importados = set()
+    for no in ast.walk(ast.parse(codigo)):
+        if isinstance(no, ast.Import):
+            for apelido in no.names:
+                importados.add(apelido.name.split(".")[0])
+        elif isinstance(no, ast.ImportFrom) and no.module:
+            importados.add(no.module.split(".")[0])
+    proibidos = importados - IMPORTS_PERMITIDOS
+    assert not proibidos, (
+        f"jogo/sala.py passou a importar {sorted(proibidos)}. A sala tem que "
+        "continuar sem I/O: nada de rede, câmera ou framework web."
+    )
 ```
+
+Depois de escrever o guarda, **confirme que ele guarda**: acrescente
+temporariamente um `import json` ao topo de `jogo/sala.py`, rode só esse teste,
+veja falhar, e remova o import. Teste de guarda que não falha quando deveria é
+pior que nenhum.
 
 - [ ] **Step 3: Rodar e confirmar que falha**
 
@@ -176,7 +230,6 @@ Quem chama a medição é `jogo/main.py`; a sala só recebe o resultado pronto.
 """
 from __future__ import annotations
 
-import math
 import secrets
 from dataclasses import dataclass, field
 from enum import Enum
@@ -186,6 +239,10 @@ CHUTE_MIN_CM = 0.0
 # Teto por motivo prático: alguém digita 99999 de brincadeira e isso explode a
 # escala da animação e o layout do pódio.
 CHUTE_MAX_CM = 200.0
+# O HTML põe maxlength=20 no campo, mas o WebSocket aceita o que mandarem e a
+# URL do jogo é pública. Sem teto aqui, um nome de 10.000 caracteres destrói o
+# layout do palco — o mesmo motivo que justifica CHUTE_MAX_CM.
+MAX_NOME = 20
 
 
 class Estado(str, Enum):
@@ -212,7 +269,9 @@ class Sala:
     estado: Estado = Estado.AGUARDANDO
     aberta: bool = True
     jogadores: list[Jogador] = field(default_factory=list)
-    _proxima_ordem: int = 0
+    # Contador interno: fora do __init__, do repr e do __eq__. `Sala(_proxima_ordem=3)`
+    # não é uma construção que faça sentido para quem usa a sala.
+    _proxima_ordem: int = field(default=0, init=False, repr=False, compare=False)
 
     # --- entrada -------------------------------------------------------------
 
@@ -224,6 +283,8 @@ class Sala:
         nome_limpo = nome.strip()
         if not nome_limpo:
             raise ErroDeJogo("Digite um nome.")
+        if len(nome_limpo) > MAX_NOME:
+            raise ErroDeJogo(f"Nome muito longo (máximo {MAX_NOME} letras).")
         if len(self.jogadores) >= MAX_JOGADORES:
             raise ErroDeJogo("Sala cheia. Espere a próxima rodada.")
         if any(j.nome.casefold() == nome_limpo.casefold() for j in self.jogadores):
@@ -239,15 +300,15 @@ class Sala:
 - [ ] **Step 5: Rodar os testes**
 
 Run: `python -m pytest tests/test_jogo_sala.py -v`
-Expected: os 8 primeiros testes passam. O último falha com
-`AttributeError: 'Sala' object has no attribute 'chutar_por_id'` — esperado,
-entra na Task 2.
+Expected: **12 passed**, nenhum vermelho. São os 9 testes de entrada, os 2 de
+tamanho de nome e o guarda de import. A branch fecha verde neste commit: teste
+vermelho commitado quebra `git bisect` e faz quem rodar a suíte tropeçar.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add jogo/__init__.py jogo/sala.py tests/test_jogo_sala.py
-git commit -m "feat(jogo): sala com entrada de jogadores e trava"
+git commit -m "feat(jogo): sala com entrada de jogadores, limite de nome e trava"
 ```
 
 ---
@@ -321,7 +382,9 @@ def test_chutar_recusa_id_desconhecido():
 def test_chutar_recusa_fora_de_aguardando():
     sala, (id_ana,) = _sala_com("Ana")
     sala.chutar_por_id(id_ana, 10.0)
-    sala.iniciar_medicao()
+    # Força o estado, como na Task 1: `iniciar_medicao` só nasce na Task 3, e
+    # este teste é sobre a recusa do chute, não sobre a transição.
+    sala.estado = Estado.MEDINDO
     with pytest.raises(ErroDeJogo, match="andamento"):
         sala.chutar_por_id(id_ana, 11.0)
 
@@ -344,7 +407,9 @@ Expected: FAIL — `AttributeError: 'Sala' object has no attribute 'chutar_por_i
 
 - [ ] **Step 3: Implementar**
 
-Em `jogo/sala.py`, acrescente estes métodos dentro de `Sala`, logo abaixo de
+Em `jogo/sala.py`, acrescente `import math` ao topo, junto de `import secrets`
+— é aqui que ele passa a ser usado (`math.isfinite`), e por isso a Task 1 não o
+trouxe. Depois acrescente estes métodos dentro de `Sala`, logo abaixo de
 `definir_trava`:
 
 ```python
@@ -377,7 +442,7 @@ Em `jogo/sala.py`, acrescente estes métodos dentro de `Sala`, logo abaixo de
 - [ ] **Step 4: Rodar os testes**
 
 Run: `python -m pytest tests/test_jogo_sala.py -v`
-Expected: tudo passa menos o que depende de `iniciar_medicao` (Task 3).
+Expected: **20 passed**, nenhum vermelho.
 
 - [ ] **Step 5: Commit**
 
@@ -594,7 +659,7 @@ E estes métodos dentro de `Sala`, abaixo de `quantos_chutaram`:
 - [ ] **Step 4: Rodar os testes**
 
 Run: `python -m pytest tests/test_jogo_sala.py -v`
-Expected: PASS em todos (29 testes).
+Expected: PASS em todos (32 testes).
 
 - [ ] **Step 5: Commit**
 
@@ -680,7 +745,7 @@ Em `jogo/sala.py`, acrescente dentro de `Sala`, abaixo de `falhar_medicao`:
 - [ ] **Step 4: Rodar os testes**
 
 Run: `python -m pytest tests/test_jogo_sala.py -v`
-Expected: PASS em todos (35 testes).
+Expected: PASS em todos (38 testes).
 
 - [ ] **Step 5: Commit**
 
@@ -1383,7 +1448,10 @@ async def ws_jogador(ws: WebSocket):
             cmd = msg.get("cmd")
             try:
                 if cmd == "entrar":
-                    jogador = sala.entrar(str(msg.get("nome", "")))
+                    # `or ""` e não um default no get: um cliente que manda
+                    # "nome": null explicitamente faria str(None) == "None" e
+                    # entraria na sala com esse nome.
+                    jogador = sala.entrar(str(msg.get("nome") or ""))
                     await ws.send_json(
                         {"tipo": "voce", "id": jogador.id, "nome": jogador.nome}
                     )
@@ -1905,7 +1973,7 @@ def enviar_em_background(resultado: dict) -> None:
 - [ ] **Step 4: Rodar a suíte do jogo inteira**
 
 Run: `python -m pytest tests/test_jogo_sala.py tests/test_jogo_medicao.py tests/test_jogo_envio.py tests/test_jogo_api.py -v`
-Expected: PASS em tudo — 35 da sala, 7 da medição, 8 do envio, 28 da API.
+Expected: PASS em tudo — 38 da sala, 7 da medição, 8 do envio, 28 da API.
 
 - [ ] **Step 5: Commit**
 
