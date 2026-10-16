@@ -227,6 +227,21 @@ deve passar a importar. É o que permite testar ranking, empates e sala cheia
 sem webcam, sem rede e sem navegador.
 
 Quem chama a medição é `jogo/main.py`; a sala só recebe o resultado pronto.
+
+Contrato para quem consome esta classe:
+
+- **Uma instância só, pela vida do processo.** Nunca reatribua `Sala()`: o
+  ticket de medição recomeça em 0 e volta a colidir com o de uma task que
+  ainda esteja em voo. Para zerar a sala, use `nova_rodada()`.
+- **Converta o JSON na borda.** `entrar` espera `str` e `chutar_por_id` espera
+  número; é o handler que faz `str(...)`, `float(...)` e captura
+  `TypeError`/`ValueError`. A sala valida regra de jogo, não tipo de payload.
+- **Capture `ValueError` de `concluir_medicao`.** Altura NaN, infinita ou
+  negativa é recusada como invariante, e a sala fica em MEDINDO. Sem o
+  `except` virando `falhar_medicao`, a rodada trava até o host resetar.
+- **Passe o ticket adiante.** `iniciar_medicao` devolve o ticket que
+  `concluir_medicao`, `revelacao_terminou` e `falhar_medicao` exigem. Elas
+  devolvem `False` para chamada obsoleta, e isso é esperado, não erro.
 """
 from __future__ import annotations
 
@@ -983,9 +998,16 @@ def test_nova_rodada_limpa_tudo_e_reabre():
 def test_nova_rodada_funciona_de_qualquer_estado(estado_antes):
     sala, (id_ana,) = _sala_com("Ana")
     sala.chutar_por_id(id_ana, 10.0)
+    # Popula o resultado antes de resetar: checar só o estado não provaria que
+    # a altura e a imagem da rodada anterior somem de MEDINDO e REVELANDO.
+    sala.altura_cm, sala.margem_cm = 17.5, 0.4
+    sala.categoria, sala.imagem_b64 = "ALTA", "iVBOR"
     sala.estado = estado_antes  # força o estado: é a válvula de escape do host
     sala.nova_rodada()
     assert sala.estado is Estado.AGUARDANDO
+    assert sala.jogadores == []
+    assert sala.altura_cm is None
+    assert sala.imagem_b64 is None
 
 
 def test_nova_rodada_permite_entrar_de_novo_com_o_mesmo_nome():
@@ -1010,6 +1032,25 @@ def test_nova_rodada_descarta_a_medicao_em_voo():
     assert sala.altura_cm is None
     # O Bruno não pode ser coroado contra uma medida que não é dele.
     assert sala.ranking() == []
+
+
+def test_ticket_de_medicao_so_cresce():
+    """Invariante que ninguém vai reconferir depois desta task.
+
+    Se alguém "simplificar" o `_medicao += 1` da `nova_rodada` para `= 0`, por
+    simetria com o `_proxima_ordem = 0` da linha de cima, o ticket 1 de uma
+    medição velha volta a colidir com o ticket 1 da seguinte — e a corrida que
+    o ticket existe para fechar reabre, em silêncio.
+    """
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    vistos = [sala.iniciar_medicao()]
+    for _ in range(3):
+        sala.nova_rodada()
+        id_novo = sala.entrar("Ana").id
+        sala.chutar_por_id(id_novo, 10.0)
+        vistos.append(sala.iniciar_medicao())
+    assert vistos == sorted(set(vistos)), f"tickets repetiram ou recuaram: {vistos}"
 ```
 
 - [ ] **Step 2: Rodar e confirmar que falha**
@@ -1040,7 +1081,7 @@ Em `jogo/sala.py`, acrescente dentro de `Sala`, abaixo de `falhar_medicao`:
 - [ ] **Step 4: Rodar os testes**
 
 Run: `python -m pytest tests/test_jogo_sala.py -v`
-Expected: PASS em todos (63 testes).
+Expected: PASS em todos (64 testes).
 
 - [ ] **Step 5: Commit**
 
@@ -1513,6 +1554,10 @@ app = FastAPI(title="Grama Webcam — jogo da feira", docs_url=None, redoc_url=N
 app.mount("/static", StaticFiles(directory=PASTA / "static"), name="static")
 
 # Estado do processo. Uma sala só, um medidor só: é um jogo por feira.
+# NUNCA reatribua `sala = Sala()` para zerar — use `sala.nova_rodada()`. Uma
+# instância nova recomeça o ticket de medição em 0, e ele volta a colidir com
+# o de uma task que ainda esteja em voo, reabrindo a corrida que o ticket
+# existe para fechar.
 sala = Sala()
 medidor = Medidor()
 
@@ -1730,7 +1775,7 @@ de WebSocket:
 ```python
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 
-from jogo.sala import ErroDeJogo, Sala
+from jogo.sala import ErroDeJogo, Estado, Sala
 ```
 
 E acrescente ao fim do arquivo:
@@ -1759,7 +1804,12 @@ def estado_atual() -> dict:
         "categoria": sala.categoria,
         "imagem_b64": sala.imagem_b64,
         "erro": sala.erro,
-        "ranking": sala.ranking(),
+        # Só em RESULTADO: a sala devolve o ranking já em REVELANDO (o palco
+        # poderia querer), mas o payload é um só para todos, e mandá-lo antes
+        # entrega o vencedor ao celular antes de a animação revelar na tela
+        # grande. O palco não precisa dele em REVELANDO — ali ele só anima o
+        # contador.
+        "ranking": sala.ranking() if sala.estado is Estado.RESULTADO else [],
     }
 
 
@@ -2350,7 +2400,7 @@ def enviar_em_background(resultado: dict) -> None:
 - [ ] **Step 4: Rodar a suíte do jogo inteira**
 
 Run: `python -m pytest tests/test_jogo_sala.py tests/test_jogo_medicao.py tests/test_jogo_envio.py tests/test_jogo_api.py -v`
-Expected: PASS em tudo — 63 da sala, 8 da medição, 8 do envio, 28 da API.
+Expected: PASS em tudo — 64 da sala, 8 da medição, 8 do envio, 28 da API.
 
 - [ ] **Step 5: Commit**
 
