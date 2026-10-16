@@ -1707,9 +1707,20 @@ def test_host_com_token_certo_serve_a_tela_do_palco(client):
     assert "text/html" in resposta.headers["content-type"]
 
 
-def test_host_responde_403_se_o_token_nao_esta_configurado(client, monkeypatch):
+def test_host_sem_token_e_sem_variavel_responde_403(client, monkeypatch):
+    """O caso que o guard `not esperado` protege.
+
+    Sem ele, variável ausente e token ausente dariam `None != None`, que é
+    falso, e o palco abriria para qualquer um numa URL pública. O teste
+    anterior mandava um token junto, então passava mesmo sem o guard.
+    """
     monkeypatch.delenv("HOST_TOKEN")
-    assert client.get(f"/host?token={HOST_TOKEN}").status_code == 403
+    assert client.get("/host").status_code == 403
+
+
+def test_host_token_vazio_e_variavel_vazia_responde_403(client, monkeypatch):
+    monkeypatch.setenv("HOST_TOKEN", "")
+    assert client.get("/host?token=").status_code == 403
 
 
 def test_qr_devolve_svg(client):
@@ -1743,6 +1754,31 @@ def test_saude_responde_sem_token(client):
     resposta = client.get("/saude")
     assert resposta.status_code == 200
     assert resposta.json()["status"] == "ok"
+
+
+def test_host_aceita_token_com_espaco_sobrando_na_variavel(client, monkeypatch):
+    """Token colado no painel da Render com `\\n` ou espaço no fim trancaria o
+    apresentador para fora, na feira, sem pista do motivo."""
+    monkeypatch.setenv("HOST_TOKEN", f"  {HOST_TOKEN}\n")
+    assert client.get(f"/host?token={HOST_TOKEN}").status_code == 200
+
+
+def test_host_com_token_nao_ascii_responde_403_e_nao_500(client):
+    """`compare_digest` com `str` não-ASCII levanta TypeError, que viraria 500."""
+    assert client.get("/host?token=é").status_code == 403
+
+
+def test_docs_e_openapi_estao_desligados(client):
+    for rota in ("/docs", "/redoc", "/openapi.json"):
+        assert client.get(rota).status_code == 404, rota
+
+
+def test_static_serve_o_css_e_nao_escapa_da_pasta(client):
+    """Guarda a regra das Tasks 10-12: nada entra em `static/` que não possa
+    ser público, e nada em `static/` dá acesso a fora dela."""
+    assert client.get("/static/comum.css").status_code == 200
+    for tentativa in ("/static/../main.py", "/static/%2e%2e/main.py", "/static/"):
+        assert client.get(tentativa).status_code == 404, tentativa
 ```
 
 - [ ] **Step 3: Rodar e confirmar que falha**
@@ -1806,7 +1842,9 @@ recarregar o módulo a cada caso seria frágil.
 from __future__ import annotations
 
 import io
+import logging
 import os
+import secrets
 from pathlib import Path
 
 import qrcode
@@ -1820,7 +1858,12 @@ from jogo.sala import Sala
 
 PASTA = Path(__file__).parent
 
-app = FastAPI(title="Grama Webcam — jogo da feira", docs_url=None, redoc_url=None)
+app = FastAPI(
+    title="Grama Webcam — jogo da feira",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 app.mount("/static", StaticFiles(directory=PASTA / "static"), name="static")
 
 # Estado do processo. Uma sala só, um medidor só: é um jogo por feira.
@@ -1837,9 +1880,26 @@ def _html(nome: str) -> HTMLResponse:
 
 
 def _conferir_token_de_host(token: str | None) -> None:
-    """403 sem token válido. Esconder o botão no CSS não é controle de acesso."""
-    esperado = os.environ.get("HOST_TOKEN")
-    if not esperado or token != esperado:
+    """403 sem token válido. Esconder o botão no CSS não é controle de acesso.
+
+    O `not esperado` e o `token is None` são checados antes da comparação: sem
+    eles, variável ausente e token ausente dariam `None != None`, que é falso,
+    e o palco abriria para qualquer um numa URL pública.
+
+    `compare_digest` em bytes, não em `str`: com `str` não-ASCII ele levanta
+    `TypeError`, que viraria 500 em vez de 403 — um `?token=é` derrubaria a
+    rota. O timing não é a ameaça real num jogo de altura de grama, mas a
+    comparação certa custa uma linha.
+
+    `.strip()` na variável porque token colado no painel da Render com espaço
+    ou `\\n` no fim trancaria o apresentador para fora, na feira, sem pista do
+    motivo. O token que chega na URL não é estripado: ali um espaço é mesmo
+    divergência.
+    """
+    esperado = (os.environ.get("HOST_TOKEN") or "").strip()
+    if not esperado or token is None:
+        raise HTTPException(status_code=403, detail="Token de host inválido.")
+    if not secrets.compare_digest(token.encode("utf-8"), esperado.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Token de host inválido.")
 
 
@@ -1856,7 +1916,13 @@ def controle():
 @app.get("/host", response_class=HTMLResponse)
 def palco(token: str | None = None):
     _conferir_token_de_host(token)
-    return _html("palco.html")
+    resposta = _html("palco.html")
+    # O token viaja na query string, e requisição same-origin (o CSS, o JS da
+    # própria página) manda a URL completa no `Referer` — o segredo cairia no
+    # log de acesso do Render. `no-referrer` corta isso.
+    resposta.headers["Referrer-Policy"] = "no-referrer"
+    resposta.headers["Cache-Control"] = "no-store"
+    return resposta
 
 
 @app.get("/qr.svg")
@@ -1866,7 +1932,15 @@ def qr(request: Request):
     Em Python e não com um `qrcode.js` de CDN: script de terceiro é
     exatamente o que falha quando a rede da feira oscila.
     """
-    url = os.environ.get("JOGO_URL_PUBLICA") or str(request.base_url)
+    url = (os.environ.get("JOGO_URL_PUBLICA") or "").strip()
+    if not url:
+        url = str(request.base_url)
+        # Em LAN isso é exatamente o que se quer. Atrás do proxy da Render, o
+        # esquema pode sair `http` e o `Host` vem de header controlável pelo
+        # cliente — o QR apontaria para o lugar errado em silêncio.
+        logging.getLogger(__name__).warning(
+            "JOGO_URL_PUBLICA não definida; QR gerado a partir de %s", url
+        )
     imagem = qrcode.make(url, image_factory=qrcode.image.svg.SvgPathImage)
     buffer = io.BytesIO()
     imagem.save(buffer)
@@ -1876,7 +1950,7 @@ def qr(request: Request):
 - [ ] **Step 7: Rodar os testes**
 
 Run: `python -m pytest tests/test_jogo_api.py -v`
-Expected: PASS nos 8 testes.
+Expected: PASS nos 13 testes.
 
 - [ ] **Step 8: Commit**
 
@@ -2011,6 +2085,10 @@ def test_entrar_com_nome_de_tipo_errado_nao_derruba_o_socket(client, nome_torto)
         # `None` cai no `or ""` e vira nome vazio, que a sala recusa.
         if nome_torto is None:
             assert resposta["tipo"] == "erro"
+        if resposta["tipo"] == "voce":
+            # Entrada aceita transmite o estado; sem consumir, a leitura
+            # seguinte pegaria esse broadcast em vez da resposta ao 2o comando.
+            assert ws.receive_json()["tipo"] == "estado"
         # O socket continua utilizável depois da recusa.
         ws.send_json({"cmd": "entrar", "nome": "Ana"})
         assert ws.receive_json()["tipo"] in ("voce", "erro")
@@ -2205,7 +2283,7 @@ async def ws_palco(ws: WebSocket):
 - [ ] **Step 4: Rodar os testes**
 
 Run: `python -m pytest tests/test_jogo_api.py -v`
-Expected: PASS nos 20 testes.
+Expected: PASS nos 29 testes.
 
 - [ ] **Step 5: Commit**
 
