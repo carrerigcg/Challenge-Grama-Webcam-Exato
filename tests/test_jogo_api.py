@@ -62,8 +62,23 @@ def test_qr_devolve_svg(client):
 
 
 def test_qr_usa_a_url_publica_configurada(client, monkeypatch):
-    monkeypatch.setenv("JOGO_URL_PUBLICA", "https://exemplo.test/")
-    assert client.get("/qr.svg").status_code == 200
+    """Prova que a variável entra no QR, não só que a rota responde.
+
+    Status 200 passaria com a variável sendo ignorada — e aí o QR impresso
+    apontaria para o endereço errado, o que só se descobre com um celular na
+    mão, na feira. Sem decodificar o QR (seria dependência nova): URLs
+    diferentes têm de gerar SVGs diferentes, e a mesma URL, o mesmo SVG.
+    """
+    monkeypatch.setenv("JOGO_URL_PUBLICA", "https://um.test/")
+    um = client.get("/qr.svg").content
+    monkeypatch.setenv("JOGO_URL_PUBLICA", "https://outro.test/")
+    outro = client.get("/qr.svg").content
+    monkeypatch.setenv("JOGO_URL_PUBLICA", "https://um.test/")
+    um_de_novo = client.get("/qr.svg").content
+
+    assert b"<svg" in um and b"<svg" in outro
+    assert um != outro, "o QR não mudou com a URL: a variável está sendo ignorada"
+    assert um == um_de_novo, "o QR não é determinístico para a mesma URL"
 
 
 def test_saude_responde_sem_token(client):
