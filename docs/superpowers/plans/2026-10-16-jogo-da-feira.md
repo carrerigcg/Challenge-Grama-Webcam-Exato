@@ -394,7 +394,11 @@ def test_chutar_recusa_fora_de_aguardando(estado):
     # Força o estado, como na Task 1: `iniciar_medicao` só nasce na Task 3, e
     # este teste é sobre a recusa do chute, não sobre a transição.
     sala.estado = estado
-    with pytest.raises(ErroDeJogo, match="andamento"):
+    # `match="já está valendo"` e não `match="andamento"`: as duas mensagens de
+    # rodada em andamento contêm "andamento", então o match frouxo passaria
+    # mesmo com a ramificação do `chute_cm is None` invertida. A Ana tem chute,
+    # então é esta mensagem que ela tem que ouvir.
+    with pytest.raises(ErroDeJogo, match="já está valendo"):
         sala.chutar_por_id(id_ana, 11.0)
     # O chute que já valia continua valendo.
     assert sala.jogador(id_ana).chute_cm == 10.0
