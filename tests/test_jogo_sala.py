@@ -142,12 +142,15 @@ def test_chutar_guarda_valor_e_ordem():
 
 
 def test_chutar_aceita_editar_e_atualiza_a_ordem():
-    sala, (id_ana,) = _sala_com("Ana")
+    sala, (id_ana, id_bruno) = _sala_com("Ana", "Bruno")
     sala.chutar_por_id(id_ana, 10.0)
-    primeira_ordem = sala.jogador(id_ana).ordem_do_chute
+    sala.chutar_por_id(id_bruno, 20.0)
     sala.chutar_por_id(id_ana, 12.5)
     assert sala.jogador(id_ana).chute_cm == 12.5
-    assert sala.jogador(id_ana).ordem_do_chute > primeira_ordem
+    # A regra é relativa, não absoluta: comparar a ordem da Ana só com ela
+    # mesma passaria com qualquer implementação em que a ordem crescesse. O que
+    # importa é que o Bruno, que cravou antes, agora está na frente dela.
+    assert sala.jogador(id_bruno).ordem_do_chute < sala.jogador(id_ana).ordem_do_chute
 
 
 def test_chutar_aceita_os_extremos():
@@ -165,26 +168,32 @@ def test_chutar_recusa_fora_da_faixa():
             sala.chutar_por_id(id_ana, valor)
 
 
-def test_chutar_recusa_nao_numero():
+@pytest.mark.parametrize("nao_numero", [float("nan"), float("inf"), float("-inf")])
+def test_chutar_recusa_nao_numero(nao_numero):
     sala, (id_ana,) = _sala_com("Ana")
     with pytest.raises(ErroDeJogo, match="número"):
-        sala.chutar_por_id(id_ana, float("nan"))
+        sala.chutar_por_id(id_ana, nao_numero)
 
 
 def test_chutar_recusa_id_desconhecido():
     sala, _ = _sala_com("Ana")
-    with pytest.raises(ErroDeJogo, match="sala"):
+    with pytest.raises(ErroDeJogo, match="não está mais na sala"):
         sala.chutar_por_id("id-que-nao-existe", 10.0)
 
 
-def test_chutar_recusa_fora_de_aguardando():
+@pytest.mark.parametrize(
+    "estado", [Estado.MEDINDO, Estado.REVELANDO, Estado.RESULTADO]
+)
+def test_chutar_recusa_fora_de_aguardando(estado):
     sala, (id_ana,) = _sala_com("Ana")
     sala.chutar_por_id(id_ana, 10.0)
     # Força o estado, como na Task 1: `iniciar_medicao` só nasce na Task 3, e
     # este teste é sobre a recusa do chute, não sobre a transição.
-    sala.estado = Estado.MEDINDO
+    sala.estado = estado
     with pytest.raises(ErroDeJogo, match="andamento"):
         sala.chutar_por_id(id_ana, 11.0)
+    # O chute que já valia continua valendo.
+    assert sala.jogador(id_ana).chute_cm == 10.0
 
 
 def test_quantos_chutaram():
@@ -196,3 +205,22 @@ def test_quantos_chutaram():
     assert sala.quantos_chutaram() == 1
     sala.chutar_por_id(id_bruno, 12.0)
     assert sala.quantos_chutaram() == 2
+
+
+def test_quem_nao_chutou_nao_ouve_que_tem_chute_valendo():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.estado = Estado.MEDINDO
+    with pytest.raises(ErroDeJogo, match="sem chute"):
+        sala.chutar_por_id(id_ana, 11.0)
+
+
+@pytest.mark.parametrize("chute_ruim", [999.0, -5.0, float("nan"), float("inf")])
+def test_chute_recusado_nao_apaga_o_chute_anterior(chute_ruim):
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    ordem_original = sala.jogador(id_ana).ordem_do_chute
+    with pytest.raises(ErroDeJogo):
+        sala.chutar_por_id(id_ana, chute_ruim)
+    # Nada é gravado até as validações passarem.
+    assert sala.jogador(id_ana).chute_cm == 10.0
+    assert sala.jogador(id_ana).ordem_do_chute == ordem_original

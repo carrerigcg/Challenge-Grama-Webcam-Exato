@@ -84,9 +84,18 @@ class Sala:
         raise ErroDeJogo("Você não está mais na sala. Entre de novo.")
 
     def chutar_por_id(self, id_jogador: str, valor_cm: float) -> None:
-        if self.estado is not Estado.AGUARDANDO:
-            raise ErroDeJogo("Rodada em andamento. Seu chute já está valendo.")
+        # O jogador é buscado ANTES da checagem de estado para que a mensagem
+        # possa dizer a verdade: quem entrou e não chutou antes da medição não
+        # tem chute "valendo", e dizer que tem é prometer o que não existe.
+        # Efeito colateral desejado: id desconhecido passa a ser reportado
+        # primeiro em qualquer estado, que é a informação mais útil.
         jogador = self.jogador(id_jogador)
+        if self.estado is not Estado.AGUARDANDO:
+            if jogador.chute_cm is None:
+                raise ErroDeJogo(
+                    "Rodada em andamento. Você ficou sem chute nesta rodada."
+                )
+            raise ErroDeJogo("Rodada em andamento. Seu chute já está valendo.")
         if not math.isfinite(valor_cm):
             raise ErroDeJogo("Digite um número.")
         if not CHUTE_MIN_CM <= valor_cm <= CHUTE_MAX_CM:
