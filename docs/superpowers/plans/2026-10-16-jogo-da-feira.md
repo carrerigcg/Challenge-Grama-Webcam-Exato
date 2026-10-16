@@ -1255,6 +1255,41 @@ async def test_medir_recusa_medicao_concorrente():
     assert erro_da_segunda and "em andamento" in erro_da_segunda[0]
 
 
+async def test_canal_que_quebra_no_envio_nao_trava_o_medidor():
+    """Socket que morre entre o `conectado` e o envio.
+
+    Caso real de feira: o Wi-Fi pisca, o apresentador clica MEDIR, e o socket
+    da ponte já está morto sem o servidor ter processado a desconexão.
+    """
+    class CanalQuebrado:
+        async def send_json(self, dados):
+            raise RuntimeError("socket já fechado")
+
+    medidor = Medidor()
+    quebrado = CanalQuebrado()
+    medidor.conectar(quebrado)
+
+    # A falha sai embrulhada, não como RuntimeError cru: quem chama precisa de
+    # ErroDeMedicao para virar mensagem no palco.
+    with pytest.raises(ErroDeMedicao, match="falar com a ponte"):
+        await medidor.medir()
+
+    # E o medidor aceita a medição seguinte. Sem limpar o `_esperando`, toda
+    # chamada depois desta cairia na guarda de "medição em andamento".
+    medidor.desconectar(quebrado)
+    canal = CanalFalso()
+    medidor.conectar(canal)
+
+    async def responder():
+        while not canal.ordens:
+            await asyncio.sleep(0)
+        medidor.entregar_resultado({"altura_cm": 9.0})
+
+    asyncio.create_task(responder())
+    resultado = await medidor.medir()
+    assert resultado["altura_cm"] == 9.0
+
+
 async def test_desconectar_canal_antigo_nao_derruba_o_atual():
     medidor = Medidor()
     antigo = CanalFalso()
@@ -1344,9 +1379,19 @@ class Medidor:
             # processa uma ordem por vez, então a segunda só atrapalharia.
             raise ErroDeMedicao("Já existe uma medição em andamento.")
         laco = asyncio.get_running_loop()
+        # O future nasce ANTES do envio de propósito: `send_json` tem await, e
+        # a resposta da ponte pode ser processada durante ele. Com o future
+        # criado depois, `entregar_resultado` não acharia ninguém esperando,
+        # jogaria o resultado fora, e esta chamada aguardaria até o timeout.
         self._esperando = laco.create_future()
-        await self.canal.send_json({"cmd": "medir"})
         try:
+            try:
+                await self.canal.send_json({"cmd": "medir"})
+            except Exception as e:
+                # Só o envio é embrulhado. Um `except` largo em volta do
+                # `wait_for` também capturaria o ErroDeMedicao que a ponte
+                # entrega pelo future, e re-embrulharia a mensagem do palco.
+                raise ErroDeMedicao(f"Não deu para falar com a ponte: {e}") from None
             return await asyncio.wait_for(self._esperando, timeout=self._timeout_s)
         except asyncio.TimeoutError:
             raise ErroDeMedicao("A câmera demorou demais para responder.") from None
@@ -1368,7 +1413,7 @@ class Medidor:
 - [ ] **Step 5: Rodar os testes**
 
 Run: `python -m pytest tests/test_jogo_medicao.py -v`
-Expected: PASS nos 8 testes.
+Expected: PASS nos 9 testes.
 
 - [ ] **Step 6: Commit**
 
@@ -2409,7 +2454,7 @@ def enviar_em_background(resultado: dict) -> None:
 - [ ] **Step 4: Rodar a suíte do jogo inteira**
 
 Run: `python -m pytest tests/test_jogo_sala.py tests/test_jogo_medicao.py tests/test_jogo_envio.py tests/test_jogo_api.py -v`
-Expected: PASS em tudo — 64 da sala, 8 da medição, 8 do envio, 28 da API.
+Expected: PASS em tudo — 64 da sala, 9 da medição, 8 do envio, 28 da API.
 
 - [ ] **Step 5: Commit**
 
