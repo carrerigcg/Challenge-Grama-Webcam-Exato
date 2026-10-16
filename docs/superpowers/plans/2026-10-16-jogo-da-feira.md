@@ -1683,7 +1683,28 @@ def app(monkeypatch):
 
 @pytest.fixture
 def client(app):
-    return TestClient(app)
+    """TestClient como context manager: UMA thread/loop para todos os sockets.
+
+    Sem o `with`, cada `websocket_connect` abre o próprio portal (thread +
+    loop). O servidor, que em produção roda num loop só, passa a escrever num
+    socket cujo loop mora em outra thread; `asyncio.Event.set` não é
+    thread-safe, e se o leitor já estava esperando o loop dele não acorda — o
+    `receive_json()` do teste pendura para sempre. Todo socket aberto aqui tem
+    de ser fechado com `__exit__` (não só `.close()`): o portal compartilhado
+    espera as sessões terminarem para encerrar.
+    """
+    from jogo.main import _tarefas_em_voo
+
+    async def drenar():
+        # Task de medição que sobrou de um teste não pode vazar para o próximo.
+        pendentes = list(_tarefas_em_voo)
+        for t in pendentes:
+            t.cancel()
+        await asyncio.gather(*pendentes, return_exceptions=True)
+
+    with TestClient(app) as c:
+        yield c
+        c.portal.call(drenar)
 
 
 def test_raiz_serve_a_tela_do_controle(client):
@@ -2401,7 +2422,7 @@ def test_chute_com_inteiro_gigante_nao_derruba_o_socket(client):
         client_ws.send_json({"cmd": "chutar", "id": id_ana, "valor_cm": 16.0})
         assert client_ws.receive_json()["tipo"] == "estado"
     finally:
-        client_ws.close()
+        client_ws.__exit__(None, None, None)
 
 
 def test_entrar_com_nome_que_nao_e_texto_e_recusado(client):
@@ -2686,10 +2707,10 @@ def test_ponte_nova_assume_e_recebe_a_ordem_de_medir(client):
                 assert segunda.receive_json()["cmd"] == "medir"
     finally:
         try:
-            primeira.close()  # o servidor já fechou este; fechar de novo levanta
+            primeira.__exit__(None, None, None)  # o servidor já fechou este; fechar de novo levanta
         except Exception:
             pass
-        ws_jogador.close()
+        ws_jogador.__exit__(None, None, None)
 
 
 def test_host_sem_token_no_socket_e_recusado(client):
@@ -2708,7 +2729,7 @@ def test_medir_sem_ponte_devolve_erro_ao_host(client):
             assert resposta["tipo"] == "erro"
             assert "ponte" in resposta["mensagem"]
     finally:
-        ws_jogador.close()
+        ws_jogador.__exit__(None, None, None)
 
 
 def test_medir_percorre_medindo_revelando_resultado(client, monkeypatch):
@@ -2743,7 +2764,7 @@ def test_medir_percorre_medindo_revelando_resultado(client, monkeypatch):
                 assert resultado["ranking"][0]["nome"] == "Ana"
                 assert resultado["ranking"][0]["erro_cm"] == 1.5
     finally:
-        ws_jogador.close()
+        ws_jogador.__exit__(None, None, None)
 
 
 def test_erro_da_ponte_volta_para_aguardando_preservando_chutes(client):
@@ -2764,7 +2785,7 @@ def test_erro_da_ponte_volta_para_aguardando_preservando_chutes(client):
                 assert estado["erro"] == "A câmera não respondeu."
                 assert estado["quantos_chutaram"] == 1
     finally:
-        ws_jogador.close()
+        ws_jogador.__exit__(None, None, None)
 
 
 def test_medir_sem_ninguem_ter_chutado_devolve_erro(client):
@@ -2821,7 +2842,7 @@ def test_resposta_atrasada_depois_de_reset_nao_revela_nada(client):
                 assert estado["aberta"] is False
                 assert estado["altura_cm"] is None
     finally:
-        ws_jogador.close()
+        ws_jogador.__exit__(None, None, None)
 
 
 def test_erro_da_ponte_sem_id_nao_derruba_a_medicao(client):
@@ -2848,7 +2869,7 @@ def test_erro_da_ponte_sem_id_nao_derruba_a_medicao(client):
                 assert estado["estado"] == "MEDINDO"
                 assert estado["erro"] is None
     finally:
-        ws_jogador.close()
+        ws_jogador.__exit__(None, None, None)
 
 
 def test_host_trava_e_destrava_a_sala(client):
@@ -2870,7 +2891,7 @@ def test_host_nova_rodada_limpa_a_sala(client):
             assert estado["jogadores"] == []
             assert estado["estado"] == "AGUARDANDO"
     finally:
-        ws_jogador.close()
+        ws_jogador.__exit__(None, None, None)
 ```
 
 - [ ] **Step 2: Rodar e confirmar que falha**
@@ -3006,6 +3027,9 @@ async def ws_host(ws: WebSocket, token: str | None = None):
                     continue
                 if cmd == "nova_rodada":
                     sala.nova_rodada()
+                    # A válvula de escape tem de soltar a câmera também: sem
+                    # isto, o MEDIR seguinte é recusado por até 15s.
+                    medidor.cancelar_medicao()
                 elif cmd == "travar":
                     sala.definir_trava(bool(msg.get("travada")))
                 else:
