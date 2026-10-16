@@ -49,12 +49,25 @@ class Medidor:
 
     # --- ciclo de vida da ponte ---------------------------------------------
 
-    def conectar(self, canal: Canal) -> None:
-        if self.canal is not None:
-            raise ErroDeMedicao(
-                "Já existe outra ponte conectada. Feche a outra antes."
-            )
+    def conectar(self, canal: Canal) -> Canal | None:
+        """Registra a ponte e devolve a anterior, que o chamador deve fechar.
+
+        Ponte nova assume o lugar da antiga em vez de ser recusada: na feira, a
+        segunda conexão é quase sempre o mesmo notebook reconectando depois de
+        o Wi-Fi piscar, e recusá-la travava a retomada até o servidor detectar
+        o socket morto — dezenas de segundos com o palco mostrando "câmera
+        offline".
+
+        A medição em voo falha junto: o notebook que reconectou não vai
+        responder a uma ordem que foi para o socket velho. É seguro porque
+        `desconectar` ignora canal que não é o atual, então o handler da ponte
+        velha, ao notar a queda, não derruba esta.
+        """
+        anterior = self.canal
         self.canal = canal
+        if anterior is not None:
+            self._falhar_espera("A ponte da câmera reconectou no meio da medição.")
+        return anterior
 
     def desconectar(self, canal: Canal) -> None:
         """Ignora canal que não é o atual: desconexão atrasada não derruba o novo."""

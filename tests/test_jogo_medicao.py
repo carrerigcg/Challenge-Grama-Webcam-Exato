@@ -103,14 +103,44 @@ async def test_desconectar_no_meio_da_medicao_falha_a_espera():
         await medidor.medir()
 
 
-async def test_segunda_ponte_e_recusada():
+async def test_ponte_nova_assume_o_lugar_da_antiga():
+    """Reconexão depois de o Wi-Fi piscar não pode ficar travada esperando o
+    servidor notar que o socket velho morreu."""
     medidor = Medidor()
-    primeira = CanalFalso()
-    medidor.conectar(primeira)
-    with pytest.raises(ErroDeMedicao, match="outra ponte"):
+    antiga = CanalFalso()
+    assert medidor.conectar(antiga) is None
+
+    nova = CanalFalso()
+    # Devolve a antiga para o chamador fechar o socket.
+    assert medidor.conectar(nova) is antiga
+    assert medidor.canal is nova
+
+    # O handler da ponte velha acorda depois e não pode derrubar a nova.
+    medidor.desconectar(antiga)
+    assert medidor.canal is nova
+
+    async def responder():
+        ordem = await esperar_ordem(nova)
+        medidor.entregar_resultado({"altura_cm": 9.0, "id": ordem["id"]})
+
+    asyncio.create_task(responder())
+    assert (await medidor.medir())["altura_cm"] == 9.0
+
+
+async def test_troca_de_ponte_falha_a_medicao_em_voo():
+    medidor = Medidor()
+    antiga = CanalFalso()
+    medidor.conectar(antiga)
+
+    async def trocar():
+        await esperar_ordem(antiga)
         medidor.conectar(CanalFalso())
-    # A primeira continua valendo: duas câmeras disputando a ordem é pior.
-    assert medidor.canal is primeira
+
+    asyncio.create_task(trocar())
+    # A ordem foi para o socket velho; o notebook que reconectou não vai
+    # responder a ela, então esta medição tem de falhar em vez de pendurar.
+    with pytest.raises(ErroDeMedicao, match="reconectou"):
+        await medidor.medir()
 
 
 async def test_medir_recusa_medicao_concorrente():
@@ -187,35 +217,6 @@ async def test_canal_que_quebra_no_envio_nao_trava_o_medidor():
     assert resultado["altura_cm"] == 9.0
 
 
-async def test_reconectar_depois_de_desconectar_e_medir_de_novo():
-    """O `finally` de uma medição não pode apagar o future da seguinte."""
-    medidor = Medidor()
-    primeiro = CanalFalso()
-    medidor.conectar(primeiro)
-
-    async def derrubar_e_remedir():
-        await esperar_ordem(primeiro)
-        medidor.desconectar(primeiro)
-
-    asyncio.create_task(derrubar_e_remedir())
-    with pytest.raises(ErroDeMedicao, match="ponte"):
-        await medidor.medir()
-
-    # Ponte nova conecta e mede. Sem a checagem de identidade no `finally`, o
-    # future desta medição seria apagado pela anterior, e o `wait_for` veria
-    # None (TypeError) ou o resultado seria descartado.
-    segundo = CanalFalso()
-    medidor.conectar(segundo)
-
-    async def responder():
-        ordem = await esperar_ordem(segundo)
-        medidor.entregar_resultado({"altura_cm": 9.0, "id": ordem["id"]})
-
-    asyncio.create_task(responder())
-    resultado = await medidor.medir()
-    assert resultado["altura_cm"] == 9.0
-
-
 async def test_resposta_de_ordem_antiga_e_descartada():
     """O bug grave: a altura de uma rodada que já acabou revelada como se fosse
     da atual, sem erro nenhum."""
@@ -234,9 +235,8 @@ async def test_resposta_de_ordem_antiga_e_descartada():
         medidor.entregar_resultado({"altura_cm": 99.0, "id": id_antigo})
         medidor.entregar_resultado({"altura_cm": 9.0, "id": ordem["id"]})
 
-    medidor2 = medidor
     asyncio.create_task(responder())
-    resultado = await medidor2.medir()
+    resultado = await medidor.medir()
     # A altura da ordem velha não pode vazar para esta medição.
     assert resultado["altura_cm"] == 9.0
 
