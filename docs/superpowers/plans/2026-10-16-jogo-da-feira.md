@@ -2668,12 +2668,28 @@ def test_ponte_conectada_aparece_no_estado(client):
             assert palco.receive_json()["ponte_conectada"] is True
 
 
-def test_segunda_ponte_e_recusada_com_mensagem(client):
-    with client.websocket_connect(f"/ws/ponte?token={PONTE_TOKEN}"):
+def test_ponte_nova_assume_e_recebe_a_ordem_de_medir(client):
+    """Reconexão depois de o Wi-Fi piscar assume na hora.
+
+    Antes a segunda ponte era recusada, e a retomada ficava travada até o
+    servidor notar o socket morto — dezenas de segundos com o palco mostrando
+    "câmera offline". Prova funcional: a ordem de medir vai para a ponte nova.
+    """
+    ws_jogador, _ = _jogador_que_chutou(client)
+    primeira = client.websocket_connect(f"/ws/ponte?token={PONTE_TOKEN}").__enter__()
+    try:
         with client.websocket_connect(f"/ws/ponte?token={PONTE_TOKEN}") as segunda:
-            resposta = segunda.receive_json()
-            assert resposta["tipo"] == "erro"
-            assert "outra ponte" in resposta["mensagem"]
+            with client.websocket_connect(f"/ws/host?token={HOST_TOKEN}") as host:
+                host.receive_json()
+                host.send_json({"cmd": "medir"})
+                assert host.receive_json()["estado"] == "MEDINDO"
+                assert segunda.receive_json()["cmd"] == "medir"
+    finally:
+        try:
+            primeira.close()  # o servidor já fechou este; fechar de novo levanta
+        except Exception:
+            pass
+        ws_jogador.close()
 
 
 def test_host_sem_token_no_socket_e_recusado(client):
@@ -2705,11 +2721,17 @@ def test_medir_percorre_medindo_revelando_resultado(client, monkeypatch):
                 host.send_json({"cmd": "medir"})
 
                 assert host.receive_json()["estado"] == "MEDINDO"
-                assert ponte.receive_json() == {"cmd": "medir"}
+                ordem = ponte.receive_json()
+                assert ordem["cmd"] == "medir"
+                # O `id` de correlação: a ponte tem de devolvê-lo, senão o
+                # servidor descarta a resposta como se fosse de uma ordem que
+                # já estourou o timeout.
+                assert isinstance(ordem["id"], int)
 
                 ponte.send_json({
                     "tipo": "resultado", "altura_cm": 17.5, "margem_cm": 0.4,
                     "categoria": "ALTA", "imagem_b64": "iVBOR",
+                    "id": ordem["id"],
                 })
 
                 revelando = host.receive_json()
@@ -2731,10 +2753,11 @@ def test_erro_da_ponte_volta_para_aguardando_preservando_chutes(client):
             with client.websocket_connect(f"/ws/host?token={HOST_TOKEN}") as host:
                 host.receive_json()
                 host.send_json({"cmd": "medir"})
-                host.receive_json()   # MEDINDO
-                ponte.receive_json()  # a ordem
+                host.receive_json()  # MEDINDO
+                ordem = ponte.receive_json()
                 ponte.send_json({
                     "tipo": "erro", "mensagem": "A câmera não respondeu.",
+                    "id": ordem["id"],
                 })
                 estado = host.receive_json()
                 assert estado["estado"] == "AGUARDANDO"
@@ -2936,12 +2959,19 @@ async def ws_ponte(ws: WebSocket, token: str | None = None):
         await ws.close(code=1008)
         return
     await ws.accept()
-    try:
-        medidor.conectar(ws)
-    except ErroDeMedicao as e:
-        await ws.send_json({"tipo": "erro", "mensagem": str(e)})
-        await ws.close(code=1008)
-        return
+    # `conectar` não recusa a segunda ponte: devolve a anterior para fecharmos.
+    # Na feira a segunda conexão é quase sempre o mesmo notebook reconectando
+    # depois de o Wi-Fi piscar, e recusá-la travava a retomada até o servidor
+    # detectar o socket morto — dezenas de segundos com o palco mostrando
+    # "câmera offline".
+    anterior = medidor.conectar(ws)
+    if anterior is not None:
+        try:
+            await anterior.close(code=1000)
+        except Exception:
+            # Fechar socket já morto levanta. Não é motivo para derrubar a
+            # ponte nova, que é a que vale agora.
+            pass
     await difusor.transmitir()  # acende o semáforo no palco
     try:
         while True:
@@ -2957,10 +2987,15 @@ async def ws_ponte(ws: WebSocket, token: str | None = None):
             if msg.get("tipo") == "resultado":
                 medidor.entregar_resultado(msg)
             elif msg.get("tipo") == "erro":
-                # O `id` vai adiante: um erro atrasado da ordem anterior não
-                # pode derrubar a medição em curso.
+                ordem = msg.get("id")
+                if not isinstance(ordem, int):
+                    # Sem o `id` não há como saber de qual medição é o erro, e
+                    # aceitá-lo derrubaria a que está em curso. O `None` do
+                    # `entregar_erro` significa falha local (desconexão), e a
+                    # ponte não pode herdar esse passe livre por omissão.
+                    continue
                 medidor.entregar_erro(
-                    str(msg.get("mensagem", "Falha na câmera.")), msg.get("id")
+                    str(msg.get("mensagem", "Falha na câmera.")), ordem
                 )
     except WebSocketDisconnect:
         pass
