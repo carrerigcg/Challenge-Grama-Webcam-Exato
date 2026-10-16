@@ -254,8 +254,8 @@ def test_segundo_iniciar_medicao_e_recusado():
 def test_concluir_medicao_vai_para_revelando_e_guarda_o_resultado():
     sala, (id_ana,) = _sala_com("Ana")
     sala.chutar_por_id(id_ana, 10.0)
-    sala.iniciar_medicao()
-    sala.concluir_medicao(altura_cm=17.5, margem_cm=0.4, categoria="ALTA",
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, altura_cm=17.5, margem_cm=0.4, categoria="ALTA",
                           imagem_b64="iVBOR")
     assert sala.estado is Estado.REVELANDO
     assert sala.altura_cm == 17.5
@@ -268,9 +268,9 @@ def test_concluir_medicao_vai_para_revelando_e_guarda_o_resultado():
 def test_revelacao_terminou_vai_para_resultado():
     sala, (id_ana,) = _sala_com("Ana")
     sala.chutar_por_id(id_ana, 10.0)
-    sala.iniciar_medicao()
-    sala.concluir_medicao(17.5, 0.4, "ALTA", "iVBOR")
-    sala.revelacao_terminou()
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", "iVBOR")
+    sala.revelacao_terminou(ticket)
     assert sala.estado is Estado.RESULTADO
 
 
@@ -278,8 +278,8 @@ def test_falhar_medicao_volta_para_aguardando_preservando_chutes():
     sala, (id_ana, id_bruno) = _sala_com("Ana", "Bruno")
     sala.chutar_por_id(id_ana, 10.0)
     sala.chutar_por_id(id_bruno, 20.0)
-    sala.iniciar_medicao()
-    sala.falhar_medicao("A câmera não respondeu.")
+    ticket = sala.iniciar_medicao()
+    sala.falhar_medicao(ticket, "A câmera não respondeu.")
     assert sala.estado is Estado.AGUARDANDO
     assert sala.erro == "A câmera não respondeu."
     # O grupo não digita tudo de novo por causa de um cabo solto.
@@ -290,8 +290,8 @@ def test_falhar_medicao_volta_para_aguardando_preservando_chutes():
 def test_erro_e_limpo_na_medicao_seguinte():
     sala, (id_ana,) = _sala_com("Ana")
     sala.chutar_por_id(id_ana, 10.0)
-    sala.iniciar_medicao()
-    sala.falhar_medicao("A câmera não respondeu.")
+    ticket = sala.iniciar_medicao()
+    sala.falhar_medicao(ticket, "A câmera não respondeu.")
     sala.iniciar_medicao()
     assert sala.erro is None
 
@@ -301,8 +301,8 @@ def test_ranking_ordena_por_erro_absoluto():
     sala.chutar_por_id(id_ana, 16.0)    # erra 1.5
     sala.chutar_por_id(id_bruno, 25.0)  # erra 7.5
     sala.chutar_por_id(id_caio, 17.0)   # erra 0.5
-    sala.iniciar_medicao()
-    sala.concluir_medicao(17.5, 0.4, "ALTA", "iVBOR")
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", "iVBOR")
     nomes = [linha["nome"] for linha in sala.ranking()]
     assert nomes == ["Caio", "Ana", "Bruno"]
     assert sala.ranking()[0]["posicao"] == 1
@@ -314,8 +314,8 @@ def test_ranking_desempata_por_quem_chutou_primeiro():
     sala, (id_ana, id_bruno) = _sala_com("Ana", "Bruno")
     sala.chutar_por_id(id_bruno, 20.0)  # erra 2.5, chutou primeiro
     sala.chutar_por_id(id_ana, 15.0)    # erra 2.5, chutou depois
-    sala.iniciar_medicao()
-    sala.concluir_medicao(17.5, 0.4, "ALTA", "iVBOR")
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", "iVBOR")
     assert [linha["nome"] for linha in sala.ranking()] == ["Bruno", "Ana"]
 
 
@@ -327,8 +327,8 @@ def test_ranking_desempata_por_ordem_quando_o_erro_arredondado_empata():
     # o Bruno ter cravado primeiro.
     sala.chutar_por_id(id_bruno, 11.6)
     sala.chutar_por_id(id_ana, 13.0)
-    sala.iniciar_medicao()
-    sala.concluir_medicao(12.3, 0.1, "ALTA", "iVBOR")
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 12.3, 0.1, "ALTA", "iVBOR")
     linhas = sala.ranking()
     assert linhas[0]["erro_cm"] == linhas[1]["erro_cm"] == 0.7
     assert linhas[0]["nome"] == "Bruno"
@@ -337,8 +337,8 @@ def test_ranking_desempata_por_ordem_quando_o_erro_arredondado_empata():
 def test_ranking_ignora_quem_nao_chutou():
     sala, (id_ana, _id_bruno) = _sala_com("Ana", "Bruno")
     sala.chutar_por_id(id_ana, 16.0)
-    sala.iniciar_medicao()
-    sala.concluir_medicao(17.5, 0.4, "ALTA", "iVBOR")
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", "iVBOR")
     assert [linha["nome"] for linha in sala.ranking()] == ["Ana"]
 
 
@@ -346,8 +346,8 @@ def test_ranking_com_dois_jogadores_nao_inventa_terceiro_lugar():
     sala, (id_ana, id_bruno) = _sala_com("Ana", "Bruno")
     sala.chutar_por_id(id_ana, 16.0)
     sala.chutar_por_id(id_bruno, 19.0)
-    sala.iniciar_medicao()
-    sala.concluir_medicao(17.5, 0.4, "ALTA", "iVBOR")
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", "iVBOR")
     # Grupo de dois é comum na feira e não pode parecer defeito.
     assert len(sala.ranking()) == 2
 
@@ -356,3 +356,119 @@ def test_ranking_vazio_antes_da_medicao():
     sala, (id_ana,) = _sala_com("Ana")
     sala.chutar_por_id(id_ana, 16.0)
     assert sala.ranking() == []
+
+
+def test_ticket_velho_nao_afeta_a_medicao_nova():
+    """O coração da correção: resposta atrasada não entra na rodada seguinte."""
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    t1 = sala.iniciar_medicao()
+    sala.falhar_medicao(t1, "A câmera não respondeu.")
+    t2 = sala.iniciar_medicao()
+    assert t1 != t2
+    # A resposta da medição 1 chega agora, atrasada.
+    assert sala.concluir_medicao(t1, 17.5, 0.4, "ALTA", "iVBOR") is False
+    assert sala.estado is Estado.MEDINDO
+    assert sala.altura_cm is None
+    # A medição 2 conclui normalmente.
+    assert sala.concluir_medicao(t2, 9.0, 0.2, "MÉDIA", None) is True
+    assert sala.altura_cm == 9.0
+
+
+def test_falhar_medicao_obsoleta_nao_derruba_a_medicao_nova():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    t1 = sala.iniciar_medicao()
+    sala.falhar_medicao(t1, "primeira falhou")
+    t2 = sala.iniciar_medicao()
+    # A falha atrasada da medição 1 não pode derrubar a 2 por baixo — era o
+    # buraco que a guarda de estado sozinha deixava.
+    assert sala.falhar_medicao(t1, "falha atrasada") is False
+    assert sala.estado is Estado.MEDINDO
+    assert sala.erro is None
+    assert t2 == sala._medicao
+
+
+def test_concluir_medicao_duas_vezes_descarta_a_segunda():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    t = sala.iniciar_medicao()
+    assert sala.concluir_medicao(t, 17.5, 0.4, "ALTA", "iVBOR") is True
+    assert sala.concluir_medicao(t, 99.0, 0.4, "ALTA", None) is False
+    assert sala.altura_cm == 17.5
+
+
+def test_revelacao_terminou_duas_vezes_descarta_a_segunda():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    t = sala.iniciar_medicao()
+    sala.concluir_medicao(t, 17.5, 0.4, "ALTA", None)
+    assert sala.revelacao_terminou(t) is True
+    assert sala.revelacao_terminou(t) is False
+    assert sala.estado is Estado.RESULTADO
+
+
+@pytest.mark.parametrize("ruim", [float("nan"), float("inf"), float("-inf"), -1.0])
+def test_concluir_medicao_recusa_altura_invalida(ruim):
+    """NaN e infinito quebrariam o JSON de TODOS os clientes de uma vez."""
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    t = sala.iniciar_medicao()
+    with pytest.raises(ValueError):
+        sala.concluir_medicao(t, ruim, 0.4, "ALTA", None)
+    # Nada gravado pela metade: a validação roda antes de qualquer mutação.
+    assert sala.estado is Estado.MEDINDO
+    assert sala.altura_cm is None
+
+
+@pytest.mark.parametrize("ruim", [float("nan"), float("inf")])
+def test_concluir_medicao_recusa_margem_invalida(ruim):
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    t = sala.iniciar_medicao()
+    with pytest.raises(ValueError):
+        sala.concluir_medicao(t, 17.5, ruim, "ALTA", None)
+    assert sala.estado is Estado.MEDINDO
+
+
+def test_iniciar_medicao_apaga_o_resultado_da_rodada_anterior():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    t1 = sala.iniciar_medicao()
+    sala.concluir_medicao(t1, 17.5, 0.4, "ALTA", "iVBOR")
+    # Na Task 4 isto acontece por `nova_rodada`; forçar o estado testa só a
+    # limpeza, sem depender do método que ainda não existe.
+    sala.estado = Estado.AGUARDANDO
+    sala.iniciar_medicao()
+    assert sala.altura_cm is None
+    assert sala.margem_cm is None
+    assert sala.categoria is None
+    assert sala.imagem_b64 is None
+
+
+def test_ranking_vazio_depois_de_falha_na_medicao():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    t = sala.iniciar_medicao()
+    sala.falhar_medicao(t, "A câmera não respondeu.")
+    assert sala.ranking() == []
+
+
+def test_ranking_com_chute_exato_tem_erro_zero():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 17.5)
+    t = sala.iniciar_medicao()
+    sala.concluir_medicao(t, 17.5, 0.4, "ALTA", None)
+    assert sala.ranking()[0]["erro_cm"] == 0.0
+
+
+def test_ranking_desempata_por_ordem_reatribuida_na_edicao():
+    sala, (id_ana, id_bruno) = _sala_com("Ana", "Bruno")
+    sala.chutar_por_id(id_ana, 15.0)    # erra 2.5, cravou primeiro
+    sala.chutar_por_id(id_bruno, 20.0)  # erra 2.5, cravou depois
+    sala.chutar_por_id(id_ana, 15.0)    # reedita o MESMO número
+    t = sala.iniciar_medicao()
+    sala.concluir_medicao(t, 17.5, 0.4, "ALTA", None)
+    # Mexer no chute custa a vantagem do desempate mesmo sem mudar o número.
+    # É a interação entre a regra de edição (Task 2) e o ranking (Task 3).
+    assert [linha["nome"] for linha in sala.ranking()] == ["Bruno", "Ana"]
