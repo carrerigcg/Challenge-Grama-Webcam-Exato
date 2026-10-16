@@ -49,6 +49,8 @@ def test_entrar_corta_espacos_em_volta_do_nome():
 def test_entrar_recusa_nome_repetido_ignorando_caixa():
     sala = Sala()
     sala.entrar("Ana")
+    # Asserts distintos de propósito: as duas mensagens contêm "nome", então um
+    # match="nome" nos dois não detectaria erro trocado entre os casos.
     with pytest.raises(ErroDeJogo, match="já está em uso"):
         sala.entrar("ana")
 
