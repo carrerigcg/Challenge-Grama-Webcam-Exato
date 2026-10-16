@@ -344,12 +344,15 @@ def test_chutar_guarda_valor_e_ordem():
 
 
 def test_chutar_aceita_editar_e_atualiza_a_ordem():
-    sala, (id_ana,) = _sala_com("Ana")
+    sala, (id_ana, id_bruno) = _sala_com("Ana", "Bruno")
     sala.chutar_por_id(id_ana, 10.0)
-    primeira_ordem = sala.jogador(id_ana).ordem_do_chute
+    sala.chutar_por_id(id_bruno, 20.0)
     sala.chutar_por_id(id_ana, 12.5)
     assert sala.jogador(id_ana).chute_cm == 12.5
-    assert sala.jogador(id_ana).ordem_do_chute > primeira_ordem
+    # A regra é relativa, não absoluta: comparar a ordem da Ana só com ela
+    # mesma passaria com qualquer implementação em que a ordem crescesse. O que
+    # importa é que o Bruno, que cravou antes, agora está na frente dela.
+    assert sala.jogador(id_bruno).ordem_do_chute < sala.jogador(id_ana).ordem_do_chute
 
 
 def test_chutar_aceita_os_extremos():
@@ -367,26 +370,57 @@ def test_chutar_recusa_fora_da_faixa():
             sala.chutar_por_id(id_ana, valor)
 
 
-def test_chutar_recusa_nao_numero():
+@pytest.mark.parametrize("nao_numero", [float("nan"), float("inf"), float("-inf")])
+def test_chutar_recusa_nao_numero(nao_numero):
     sala, (id_ana,) = _sala_com("Ana")
+    # Infinito cai no `isfinite`, não na faixa: a mensagem certa é "digite um
+    # número", não "entre 0 e 200".
     with pytest.raises(ErroDeJogo, match="número"):
-        sala.chutar_por_id(id_ana, float("nan"))
+        sala.chutar_por_id(id_ana, nao_numero)
 
 
 def test_chutar_recusa_id_desconhecido():
     sala, _ = _sala_com("Ana")
-    with pytest.raises(ErroDeJogo, match="sala"):
+    with pytest.raises(ErroDeJogo, match="não está mais na sala"):
         sala.chutar_por_id("id-que-nao-existe", 10.0)
 
 
-def test_chutar_recusa_fora_de_aguardando():
+@pytest.mark.parametrize(
+    "estado", [Estado.MEDINDO, Estado.REVELANDO, Estado.RESULTADO]
+)
+def test_chutar_recusa_fora_de_aguardando(estado):
     sala, (id_ana,) = _sala_com("Ana")
     sala.chutar_por_id(id_ana, 10.0)
     # Força o estado, como na Task 1: `iniciar_medicao` só nasce na Task 3, e
     # este teste é sobre a recusa do chute, não sobre a transição.
-    sala.estado = Estado.MEDINDO
+    sala.estado = estado
     with pytest.raises(ErroDeJogo, match="andamento"):
         sala.chutar_por_id(id_ana, 11.0)
+    # O chute que já valia continua valendo.
+    assert sala.jogador(id_ana).chute_cm == 10.0
+
+
+def test_quem_nao_chutou_nao_ouve_que_tem_chute_valendo():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.estado = Estado.MEDINDO
+    # Criança distraída que entrou e não chutou antes de o apresentador medir é
+    # o caso mais provável na feira. Dizer "seu chute já está valendo" para ela
+    # é prometer o que não existe.
+    with pytest.raises(ErroDeJogo, match="sem chute"):
+        sala.chutar_por_id(id_ana, 11.0)
+
+
+@pytest.mark.parametrize("chute_ruim", [999.0, -5.0, float("nan"), float("inf")])
+def test_chute_recusado_nao_apaga_o_chute_anterior(chute_ruim):
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    ordem_original = sala.jogador(id_ana).ordem_do_chute
+    with pytest.raises(ErroDeJogo):
+        sala.chutar_por_id(id_ana, chute_ruim)
+    # Nada é gravado até as validações passarem. É a regressão mais provável se
+    # alguém reordenar as linhas de `chutar_por_id`.
+    assert sala.jogador(id_ana).chute_cm == 10.0
+    assert sala.jogador(id_ana).ordem_do_chute == ordem_original
 
 
 def test_quantos_chutaram():
@@ -422,9 +456,18 @@ trouxe. Depois acrescente estes métodos dentro de `Sala`, logo abaixo de
         raise ErroDeJogo("Você não está mais na sala. Entre de novo.")
 
     def chutar_por_id(self, id_jogador: str, valor_cm: float) -> None:
-        if self.estado is not Estado.AGUARDANDO:
-            raise ErroDeJogo("Rodada em andamento. Seu chute já está valendo.")
+        # O jogador é buscado ANTES da checagem de estado para que a mensagem
+        # possa dizer a verdade: quem entrou e não chutou antes da medição não
+        # tem chute "valendo", e dizer que tem é prometer o que não existe.
+        # Efeito colateral desejado: id desconhecido passa a ser reportado
+        # primeiro em qualquer estado, que é a informação mais útil.
         jogador = self.jogador(id_jogador)
+        if self.estado is not Estado.AGUARDANDO:
+            if jogador.chute_cm is None:
+                raise ErroDeJogo(
+                    "Rodada em andamento. Você ficou sem chute nesta rodada."
+                )
+            raise ErroDeJogo("Rodada em andamento. Seu chute já está valendo.")
         if not math.isfinite(valor_cm):
             raise ErroDeJogo("Digite um número.")
         if not CHUTE_MIN_CM <= valor_cm <= CHUTE_MAX_CM:
@@ -442,7 +485,7 @@ trouxe. Depois acrescente estes métodos dentro de `Sala`, logo abaixo de
 - [ ] **Step 4: Rodar os testes**
 
 Run: `python -m pytest tests/test_jogo_sala.py -v`
-Expected: **20 passed**, nenhum vermelho.
+Expected: **29 passed**, nenhum vermelho.
 
 - [ ] **Step 5: Commit**
 
@@ -553,6 +596,21 @@ def test_ranking_desempata_por_quem_chutou_primeiro():
     assert [linha["nome"] for linha in sala.ranking()] == ["Bruno", "Ana"]
 
 
+def test_ranking_desempata_por_ordem_quando_o_erro_arredondado_empata():
+    sala, (id_ana, id_bruno) = _sala_com("Ana", "Bruno")
+    # Medida 12,3: o erro do Bruno é 0.7000000000000011 e o da Ana é
+    # 0.6999999999999993. O palco mostra "0,7 cm" nos dois. Sem arredondar
+    # antes de ordenar, a Ana ganharia por uma diferença invisível, apesar de
+    # o Bruno ter cravado primeiro.
+    sala.chutar_por_id(id_bruno, 11.6)
+    sala.chutar_por_id(id_ana, 13.0)
+    sala.iniciar_medicao()
+    sala.concluir_medicao(12.3, 0.1, "ALTA", "iVBOR")
+    linhas = sala.ranking()
+    assert linhas[0]["erro_cm"] == linhas[1]["erro_cm"] == 0.7
+    assert linhas[0]["nome"] == "Bruno"
+
+
 def test_ranking_ignora_quem_nao_chutou():
     sala, (id_ana, _id_bruno) = _sala_com("Ana", "Bruno")
     sala.chutar_por_id(id_ana, 16.0)
@@ -640,17 +698,28 @@ E estes métodos dentro de `Sala`, abaixo de `quantos_chutaram`:
         if self.altura_cm is None:
             return []
         com_chute = [j for j in self.jogadores if j.chute_cm is not None]
-        ordenados = sorted(
-            com_chute,
-            key=lambda j: (abs(j.chute_cm - self.altura_cm), j.ordem_do_chute),
-        )
+
+        def erro(j: Jogador) -> float:
+            """Erro já arredondado, usado para ordenar E para mostrar.
+
+            Arredondar antes de ordenar não é cosmético. Medida 12,3 com chutes
+            de 13,0 e 11,6 dá erros 0.6999999999999993 e 0.7000000000000011: o
+            palco mostra "0,7 cm" nos dois, mas uma ordenação pelo valor cru
+            escolhe o vencedor por uma diferença no último bit, e o desempate
+            por ordem de chegada nunca se aplica. A plateia vê um empate e um
+            vencedor decidido por motivo invisível. Uma função só, usada nos
+            dois lugares, garante que o critério é o número que está na tela.
+            """
+            return round(abs(j.chute_cm - self.altura_cm), 1)
+
+        ordenados = sorted(com_chute, key=lambda j: (erro(j), j.ordem_do_chute))
         return [
             {
                 "posicao": i + 1,
                 "id": j.id,
                 "nome": j.nome,
                 "chute_cm": j.chute_cm,
-                "erro_cm": round(abs(j.chute_cm - self.altura_cm), 1),
+                "erro_cm": erro(j),
             }
             for i, j in enumerate(ordenados)
         ]
@@ -659,7 +728,7 @@ E estes métodos dentro de `Sala`, abaixo de `quantos_chutaram`:
 - [ ] **Step 4: Rodar os testes**
 
 Run: `python -m pytest tests/test_jogo_sala.py -v`
-Expected: PASS em todos (32 testes).
+Expected: PASS em todos (42 testes).
 
 - [ ] **Step 5: Commit**
 
@@ -745,7 +814,7 @@ Em `jogo/sala.py`, acrescente dentro de `Sala`, abaixo de `falhar_medicao`:
 - [ ] **Step 4: Rodar os testes**
 
 Run: `python -m pytest tests/test_jogo_sala.py -v`
-Expected: PASS em todos (38 testes).
+Expected: PASS em todos (48 testes).
 
 - [ ] **Step 5: Commit**
 
@@ -1993,7 +2062,7 @@ def enviar_em_background(resultado: dict) -> None:
 - [ ] **Step 4: Rodar a suíte do jogo inteira**
 
 Run: `python -m pytest tests/test_jogo_sala.py tests/test_jogo_medicao.py tests/test_jogo_envio.py tests/test_jogo_api.py -v`
-Expected: PASS em tudo — 38 da sala, 7 da medição, 8 do envio, 28 da API.
+Expected: PASS em tudo — 48 da sala, 7 da medição, 8 do envio, 28 da API.
 
 - [ ] **Step 5: Commit**
 
