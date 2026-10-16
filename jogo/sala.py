@@ -8,6 +8,7 @@ Quem chama a medição é `jogo/main.py`; a sala só recebe o resultado pronto.
 """
 from __future__ import annotations
 
+import math
 import secrets
 from dataclasses import dataclass, field
 from enum import Enum
@@ -73,3 +74,28 @@ class Sala:
 
     def definir_trava(self, travada: bool) -> None:
         self.aberta = not travada
+
+    # --- chutes --------------------------------------------------------------
+
+    def jogador(self, id_jogador: str) -> Jogador:
+        for j in self.jogadores:
+            if j.id == id_jogador:
+                return j
+        raise ErroDeJogo("Você não está mais na sala. Entre de novo.")
+
+    def chutar_por_id(self, id_jogador: str, valor_cm: float) -> None:
+        if self.estado is not Estado.AGUARDANDO:
+            raise ErroDeJogo("Rodada em andamento. Seu chute já está valendo.")
+        jogador = self.jogador(id_jogador)
+        if not math.isfinite(valor_cm):
+            raise ErroDeJogo("Digite um número.")
+        if not CHUTE_MIN_CM <= valor_cm <= CHUTE_MAX_CM:
+            raise ErroDeJogo("O chute tem que estar entre 0 e 200 cm.")
+        jogador.chute_cm = float(valor_cm)
+        # Reatribuir a ordem na edição é proposital: quem muda de ideia depois
+        # perde a vantagem do desempate sobre quem cravou antes.
+        jogador.ordem_do_chute = self._proxima_ordem
+        self._proxima_ordem += 1
+
+    def quantos_chutaram(self) -> int:
+        return sum(1 for j in self.jogadores if j.chute_cm is not None)

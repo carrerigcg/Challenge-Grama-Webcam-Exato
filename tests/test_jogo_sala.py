@@ -118,3 +118,79 @@ def test_sala_nao_ganha_io_sem_ninguem_notar():
         f"jogo/sala.py passou a importar {sorted(proibidos)}. A sala tem que "
         "continuar sem I/O: nada de rede, câmera ou framework web."
     )
+
+
+def _sala_com(*nomes: str) -> tuple[Sala, list[str]]:
+    """Sala em AGUARDANDO com os jogadores dados. Devolve (sala, ids)."""
+    sala = Sala()
+    ids = [sala.entrar(nome).id for nome in nomes]
+    return sala, ids
+
+
+def test_chutar_guarda_valor_e_ordem():
+    sala, (id_ana, id_bruno) = _sala_com("Ana", "Bruno")
+    sala.chutar_por_id(id_bruno, 20.0)
+    sala.chutar_por_id(id_ana, 10.0)
+    bruno = sala.jogador(id_bruno)
+    ana = sala.jogador(id_ana)
+    assert bruno.chute_cm == 20.0
+    assert ana.chute_cm == 10.0
+    # Bruno chutou primeiro, então tem ordem menor — é o critério de desempate.
+    assert bruno.ordem_do_chute < ana.ordem_do_chute
+
+
+def test_chutar_aceita_editar_e_atualiza_a_ordem():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    primeira_ordem = sala.jogador(id_ana).ordem_do_chute
+    sala.chutar_por_id(id_ana, 12.5)
+    assert sala.jogador(id_ana).chute_cm == 12.5
+    assert sala.jogador(id_ana).ordem_do_chute > primeira_ordem
+
+
+def test_chutar_aceita_os_extremos():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 0.0)
+    assert sala.jogador(id_ana).chute_cm == 0.0
+    sala.chutar_por_id(id_ana, 200.0)
+    assert sala.jogador(id_ana).chute_cm == 200.0
+
+
+def test_chutar_recusa_fora_da_faixa():
+    sala, (id_ana,) = _sala_com("Ana")
+    for valor in (-0.1, 200.1, 99999.0):
+        with pytest.raises(ErroDeJogo, match="0 e 200"):
+            sala.chutar_por_id(id_ana, valor)
+
+
+def test_chutar_recusa_nao_numero():
+    sala, (id_ana,) = _sala_com("Ana")
+    with pytest.raises(ErroDeJogo, match="número"):
+        sala.chutar_por_id(id_ana, float("nan"))
+
+
+def test_chutar_recusa_id_desconhecido():
+    sala, _ = _sala_com("Ana")
+    with pytest.raises(ErroDeJogo, match="sala"):
+        sala.chutar_por_id("id-que-nao-existe", 10.0)
+
+
+def test_chutar_recusa_fora_de_aguardando():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    # Força o estado, como na Task 1: `iniciar_medicao` só nasce na Task 3, e
+    # este teste é sobre a recusa do chute, não sobre a transição.
+    sala.estado = Estado.MEDINDO
+    with pytest.raises(ErroDeJogo, match="andamento"):
+        sala.chutar_por_id(id_ana, 11.0)
+
+
+def test_quantos_chutaram():
+    sala, (id_ana, id_bruno) = _sala_com("Ana", "Bruno")
+    assert sala.quantos_chutaram() == 0
+    sala.chutar_por_id(id_ana, 10.0)
+    assert sala.quantos_chutaram() == 1
+    sala.chutar_por_id(id_ana, 11.0)
+    assert sala.quantos_chutaram() == 1
+    sala.chutar_por_id(id_bruno, 12.0)
+    assert sala.quantos_chutaram() == 2
