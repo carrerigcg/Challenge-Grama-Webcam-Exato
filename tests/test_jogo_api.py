@@ -388,3 +388,164 @@ def test_texto_torto_no_palco_nao_derruba_o_socket(client):
             jogador.receive_json()
             assert palco.receive_json()["jogadores"][0]["nome"] == "Ana"
             assert difusor.quantos == 2
+
+
+def _jogador_que_chutou(client, nome="Ana", valor=16.0):
+    """Abre um socket de jogador, entra, chuta e devolve (socket, id).
+
+    Devolve o socket aberto em vez de usar `with`: aninhar mais um nível de
+    contexto dentro dos testes de host deixaria a leitura ilegível.
+    """
+    ws = client.websocket_connect("/ws/jogador").__enter__()
+    ws.send_json({"cmd": "entrar", "nome": nome})
+    id_jogador = ws.receive_json()["id"]
+    ws.receive_json()
+    ws.send_json({"cmd": "chutar", "id": id_jogador, "valor_cm": valor})
+    ws.receive_json()
+    return ws, id_jogador
+
+
+def test_ponte_sem_token_e_recusada(client):
+    with pytest.raises(Exception):
+        with client.websocket_connect("/ws/ponte") as ws:
+            ws.receive_json()
+
+
+def test_ponte_conectada_aparece_no_estado(client):
+    with client.websocket_connect(f"/ws/ponte?token={PONTE_TOKEN}"):
+        with client.websocket_connect("/ws/palco") as palco:
+            assert palco.receive_json()["ponte_conectada"] is True
+
+
+def test_ponte_nova_assume_e_recebe_a_ordem_de_medir(client):
+    """Reconexão depois de o Wi-Fi piscar assume na hora.
+
+    Antes a segunda ponte era recusada, e a retomada ficava travada até o
+    servidor notar o socket morto — dezenas de segundos com o palco mostrando
+    "câmera offline". Prova funcional: a ordem de medir vai para a ponte nova.
+    """
+    ws_jogador, _ = _jogador_que_chutou(client)
+    primeira = client.websocket_connect(f"/ws/ponte?token={PONTE_TOKEN}").__enter__()
+    try:
+        with client.websocket_connect(f"/ws/ponte?token={PONTE_TOKEN}") as segunda:
+            with client.websocket_connect(f"/ws/host?token={HOST_TOKEN}") as host:
+                host.receive_json()
+                host.send_json({"cmd": "medir"})
+                assert host.receive_json()["estado"] == "MEDINDO"
+                assert segunda.receive_json()["cmd"] == "medir"
+    finally:
+        try:
+            primeira.close()  # o servidor já fechou este; fechar de novo levanta
+        except Exception:
+            pass
+        ws_jogador.close()
+
+
+def test_host_sem_token_no_socket_e_recusado(client):
+    with pytest.raises(Exception):
+        with client.websocket_connect("/ws/host") as ws:
+            ws.receive_json()
+
+
+def test_medir_sem_ponte_devolve_erro_ao_host(client):
+    ws_jogador, _ = _jogador_que_chutou(client)
+    try:
+        with client.websocket_connect(f"/ws/host?token={HOST_TOKEN}") as host:
+            host.receive_json()  # estado inicial
+            host.send_json({"cmd": "medir"})
+            resposta = host.receive_json()
+            assert resposta["tipo"] == "erro"
+            assert "ponte" in resposta["mensagem"]
+    finally:
+        ws_jogador.close()
+
+
+def test_medir_percorre_medindo_revelando_resultado(client, monkeypatch):
+    monkeypatch.setenv("DURACAO_REVELACAO_S", "0.05")
+    ws_jogador, _ = _jogador_que_chutou(client, "Ana", 16.0)
+    try:
+        with client.websocket_connect(f"/ws/ponte?token={PONTE_TOKEN}") as ponte:
+            with client.websocket_connect(f"/ws/host?token={HOST_TOKEN}") as host:
+                host.receive_json()  # estado inicial
+                host.send_json({"cmd": "medir"})
+
+                assert host.receive_json()["estado"] == "MEDINDO"
+                ordem = ponte.receive_json()
+                assert ordem["cmd"] == "medir"
+                # O `id` de correlação: a ponte tem de devolvê-lo, senão o
+                # servidor descarta a resposta como se fosse de uma ordem que
+                # já estourou o timeout.
+                assert isinstance(ordem["id"], int)
+
+                ponte.send_json({
+                    "tipo": "resultado", "altura_cm": 17.5, "margem_cm": 0.4,
+                    "categoria": "ALTA", "imagem_b64": "iVBOR",
+                    "id": ordem["id"],
+                })
+
+                revelando = host.receive_json()
+                assert revelando["estado"] == "REVELANDO"
+                assert revelando["altura_cm"] == 17.5
+
+                resultado = host.receive_json()
+                assert resultado["estado"] == "RESULTADO"
+                assert resultado["ranking"][0]["nome"] == "Ana"
+                assert resultado["ranking"][0]["erro_cm"] == 1.5
+    finally:
+        ws_jogador.close()
+
+
+def test_erro_da_ponte_volta_para_aguardando_preservando_chutes(client):
+    ws_jogador, _ = _jogador_que_chutou(client, "Ana", 16.0)
+    try:
+        with client.websocket_connect(f"/ws/ponte?token={PONTE_TOKEN}") as ponte:
+            with client.websocket_connect(f"/ws/host?token={HOST_TOKEN}") as host:
+                host.receive_json()
+                host.send_json({"cmd": "medir"})
+                host.receive_json()  # MEDINDO
+                ordem = ponte.receive_json()
+                ponte.send_json({
+                    "tipo": "erro", "mensagem": "A câmera não respondeu.",
+                    "id": ordem["id"],
+                })
+                estado = host.receive_json()
+                assert estado["estado"] == "AGUARDANDO"
+                assert estado["erro"] == "A câmera não respondeu."
+                assert estado["quantos_chutaram"] == 1
+    finally:
+        ws_jogador.close()
+
+
+def test_medir_sem_ninguem_ter_chutado_devolve_erro(client):
+    with client.websocket_connect("/ws/jogador") as jogador:
+        _entrar(jogador, "Ana")
+        with client.websocket_connect(f"/ws/ponte?token={PONTE_TOKEN}"):
+            jogador.receive_json()  # estado com a ponte ligada
+            with client.websocket_connect(f"/ws/host?token={HOST_TOKEN}") as host:
+                host.receive_json()
+                host.send_json({"cmd": "medir"})
+                resposta = host.receive_json()
+                assert resposta["tipo"] == "erro"
+                assert "chutou" in resposta["mensagem"]
+
+
+def test_host_trava_e_destrava_a_sala(client):
+    with client.websocket_connect(f"/ws/host?token={HOST_TOKEN}") as host:
+        host.receive_json()
+        host.send_json({"cmd": "travar", "travada": True})
+        assert host.receive_json()["aberta"] is False
+        host.send_json({"cmd": "travar", "travada": False})
+        assert host.receive_json()["aberta"] is True
+
+
+def test_host_nova_rodada_limpa_a_sala(client):
+    ws_jogador, _ = _jogador_que_chutou(client)
+    try:
+        with client.websocket_connect(f"/ws/host?token={HOST_TOKEN}") as host:
+            host.receive_json()
+            host.send_json({"cmd": "nova_rodada"})
+            estado = host.receive_json()
+            assert estado["jogadores"] == []
+            assert estado["estado"] == "AGUARDANDO"
+    finally:
+        ws_jogador.close()

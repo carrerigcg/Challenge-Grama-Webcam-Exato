@@ -8,6 +8,7 @@ recarregar o módulo a cada caso seria frágil.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
@@ -21,7 +22,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from jogo.difusor import Difusor
-from jogo.medicao import Medidor
+from jogo.envio import enviar_em_background
+from jogo.medicao import ErroDeMedicao, Medidor
 from jogo.sala import ErroDeJogo, Estado, Sala
 
 PASTA = Path(__file__).parent
@@ -229,3 +231,185 @@ async def ws_palco(ws: WebSocket):
         pass
     finally:
         difusor.remover(ws)
+
+
+# --- revelação ---------------------------------------------------------------
+
+# Cronometrada pelo servidor, não disparada pelo palco: um palco fechado ou
+# travado deixaria todos os celulares presos em REVELANDO para sempre.
+# 2,2s é a animação do contador; a sobra deixa o número parado um instante.
+DURACAO_REVELACAO_S_PADRAO = 2.6
+
+
+def _duracao_revelacao() -> float:
+    return float(os.environ.get("DURACAO_REVELACAO_S", DURACAO_REVELACAO_S_PADRAO))
+
+
+# O asyncio só guarda referência fraca para tasks soltas, e uma task coletada
+# no meio da medição morre em silêncio, deixando a sala presa em MEDINDO.
+_tarefas_em_voo: set[asyncio.Task] = set()
+
+
+async def _medir_e_revelar(ticket: int) -> None:
+    """Pede a medição, revela e fecha. Cada passo é descartável por `ticket`.
+
+    O ticket vem do `iniciar_medicao` e identifica a rodada. Se o apresentador
+    resetar a sala no meio, a sala recusa tudo que chegar com ticket velho e
+    esta task some sem efeito — é o que impede a resposta de uma rodada que já
+    acabou de coroar um vencedor contra uma medida que não é dele.
+    """
+    try:
+        resultado = await medidor.medir()
+        # Dentro do try de propósito: um payload sem `altura_cm` levantaria
+        # KeyError aqui, e fora do try isso deixaria a sala presa em MEDINDO
+        # para sempre, com só o "nova rodada" como escape.
+        altura = resultado["altura_cm"]
+    except ErroDeMedicao as e:
+        sala.falhar_medicao(ticket, str(e))
+        await difusor.transmitir()
+        return
+    except Exception as e:
+        sala.falhar_medicao(ticket, f"Falha inesperada na medição: {e}")
+        await difusor.transmitir()
+        return
+
+    try:
+        aceito = sala.concluir_medicao(
+            ticket,
+            altura_cm=altura,
+            margem_cm=resultado.get("margem_cm"),
+            categoria=resultado.get("categoria", ""),
+            imagem_b64=resultado.get("imagem_b64"),
+        )
+    except ValueError as e:
+        # A sala recusa NaN, infinito e negativo: seriam serializados como
+        # tokens inválidos de JSON e derrubariam todos os clientes de uma vez.
+        sala.falhar_medicao(ticket, f"Medição inválida: {e}")
+        await difusor.transmitir()
+        return
+
+    # A grama foi medida de verdade, então o dado vai pra API mesmo quando a
+    # rodada já acabou — a API guarda leitura bruta, não resultado de jogo.
+    enviar_em_background(resultado)
+    if not aceito:
+        return  # rodada obsoleta: sem transmitir e sem dormir a animação
+
+    await difusor.transmitir()
+    await asyncio.sleep(_duracao_revelacao())
+    sala.revelacao_terminou(ticket)
+    await difusor.transmitir()
+
+
+# --- WebSocket do host -------------------------------------------------------
+
+
+@app.websocket("/ws/host")
+async def ws_host(ws: WebSocket, token: str | None = None):
+    esperado = os.environ.get("HOST_TOKEN")
+    if not esperado or token != esperado:
+        await ws.close(code=1008)
+        return
+    await ws.accept()
+    difusor.adicionar(ws)
+    await ws.send_json(estado_atual())
+    try:
+        while True:
+            # Mesma blindagem do socket de jogador: a revisão da Task 7
+            # reproduziu que texto não-JSON e mensagem que não é objeto matam
+            # o handler. Aqui o estrago seria pior — o apresentador perde o
+            # controle do jogo no meio da apresentação.
+            try:
+                msg = await ws.receive_json()
+            except ValueError:
+                await ws.send_json(
+                    {"tipo": "erro", "mensagem": "Mensagem inválida."}
+                )
+                continue
+            if not isinstance(msg, dict):
+                await ws.send_json(
+                    {"tipo": "erro", "mensagem": "Mensagem inválida."}
+                )
+                continue
+            cmd = msg.get("cmd")
+            try:
+                if cmd == "medir":
+                    if not medidor.conectado:
+                        raise ErroDeJogo("A ponte da câmera não está conectada.")
+                    ticket = sala.iniciar_medicao()
+                    await difusor.transmitir()
+                    # Task separada: o handler precisa voltar a ler o socket
+                    # enquanto a medição corre. A referência fica no set porque
+                    # o asyncio não segura task solta.
+                    tarefa = asyncio.create_task(_medir_e_revelar(ticket))
+                    _tarefas_em_voo.add(tarefa)
+                    tarefa.add_done_callback(_tarefas_em_voo.discard)
+                    continue
+                if cmd == "nova_rodada":
+                    sala.nova_rodada()
+                elif cmd == "travar":
+                    sala.definir_trava(bool(msg.get("travada")))
+                else:
+                    raise ErroDeJogo("Comando desconhecido.")
+            except ErroDeJogo as e:
+                await ws.send_json({"tipo": "erro", "mensagem": str(e)})
+                continue
+            await difusor.transmitir()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        difusor.remover(ws)
+
+
+# --- WebSocket da ponte ------------------------------------------------------
+
+
+@app.websocket("/ws/ponte")
+async def ws_ponte(ws: WebSocket, token: str | None = None):
+    esperado = os.environ.get("PONTE_TOKEN")
+    if not esperado or token != esperado:
+        await ws.close(code=1008)
+        return
+    await ws.accept()
+    # `conectar` não recusa a segunda ponte: devolve a anterior para fecharmos.
+    # Na feira a segunda conexão é quase sempre o mesmo notebook reconectando
+    # depois de o Wi-Fi piscar, e recusá-la travava a retomada até o servidor
+    # detectar o socket morto — dezenas de segundos com o palco mostrando
+    # "câmera offline".
+    anterior = medidor.conectar(ws)
+    if anterior is not None:
+        try:
+            await anterior.close(code=1000)
+        except Exception:
+            # Fechar socket já morto levanta. Não é motivo para derrubar a
+            # ponte nova, que é a que vale agora.
+            pass
+    await difusor.transmitir()  # acende o semáforo no palco
+    try:
+        while True:
+            try:
+                msg = await ws.receive_json()
+            except ValueError:
+                # A ponte é nosso código e não lê resposta do servidor, então
+                # mandar erro de volta não serve. Ignora e segue vivo: derrubar
+                # o socket apagaria o semáforo do palco por causa de um frame.
+                continue
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("tipo") == "resultado":
+                medidor.entregar_resultado(msg)
+            elif msg.get("tipo") == "erro":
+                ordem = msg.get("id")
+                if not isinstance(ordem, int):
+                    # Sem o `id` não há como saber de qual medição é o erro, e
+                    # aceitá-lo derrubaria a que está em curso. O `None` do
+                    # `entregar_erro` significa falha local (desconexão), e a
+                    # ponte não pode herdar esse passe livre por omissão.
+                    continue
+                medidor.entregar_erro(
+                    str(msg.get("mensagem", "Falha na câmera.")), ordem
+                )
+    except WebSocketDisconnect:
+        pass
+    finally:
+        medidor.desconectar(ws)
+        await difusor.transmitir()  # apaga o semáforo
