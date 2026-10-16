@@ -277,7 +277,6 @@ class Sala:
         return [
             {
                 "posicao": i + 1,
-                "id": j.id,
                 "nome": j.nome,
                 "chute_cm": j.chute_cm,
                 "erro_cm": self._erro_arredondado(j),

@@ -127,8 +127,12 @@ def estado_atual() -> dict:
         "estado": sala.estado.value,
         "aberta": sala.aberta,
         "ponte_conectada": medidor.conectado,
+        # Sem o `id`: ele é a credencial que o `chutar` e o `voltar` exigem, e
+        # no broadcast qualquer visitante com a aba Rede aberta chutaria em
+        # nome de outro. O celular acha a própria linha pelo `nome`, que a
+        # sala garante único por rodada.
         "jogadores": [
-            {"id": j.id, "nome": j.nome, "chutou": j.chute_cm is not None}
+            {"nome": j.nome, "chutou": j.chute_cm is not None}
             for j in sala.jogadores
         ],
         "quantos_chutaram": sala.quantos_chutaram(),

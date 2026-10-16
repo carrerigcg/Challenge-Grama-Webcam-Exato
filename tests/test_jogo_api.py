@@ -303,3 +303,26 @@ def test_comando_de_host_pelo_socket_de_jogador_nao_faz_nada(client):
         assert sala_do_app.estado.value == "AGUARDANDO"
         assert sala_do_app.aberta is True
         assert len(sala_do_app.jogadores) == 1
+
+
+def test_payload_nao_expoe_o_id_de_ninguem(app):
+    """O `id` é credencial: o `chutar` e o `voltar` o exigem.
+
+    No broadcast, qualquer visitante com a aba Rede aberta leria o id dos
+    outros e chutaria em nome deles. Ele chega só no frame `voce`, que vai
+    para um socket só.
+    """
+    from jogo.main import estado_atual, sala
+
+    jogador = sala.entrar("Ana")
+    sala.chutar_por_id(jogador.id, 16.0)
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", None)
+    sala.revelacao_terminou(ticket)
+
+    payload = estado_atual()
+    assert payload["jogadores"] == [{"nome": "Ana", "chutou": True}]
+    assert payload["ranking"], "o ranking deveria estar preenchido em RESULTADO"
+    for linha in payload["ranking"]:
+        assert "id" not in linha
+    assert jogador.id not in str(payload)
