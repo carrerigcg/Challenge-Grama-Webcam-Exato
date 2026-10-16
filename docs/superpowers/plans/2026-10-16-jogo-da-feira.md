@@ -1362,6 +1362,26 @@ def test_voltar_com_id_desconhecido_devolve_erro(client):
         assert ws.receive_json()["tipo"] == "erro"
 
 
+@pytest.mark.parametrize("nome_torto", [None, 123, ["Ana"], {"a": 1}])
+def test_entrar_com_nome_de_tipo_errado_nao_derruba_o_socket(client, nome_torto):
+    """A URL é pública: o payload pode vir de qualquer cliente, não só do nosso.
+
+    O `str(... or "")` do handler transforma qualquer coisa em texto, e daí a
+    sala decide. O que não pode é a conexão morrer — um socket derrubado por
+    payload torto deixaria o visitante com a tela travada sem explicação.
+    """
+    with client.websocket_connect("/ws/jogador") as ws:
+        ws.send_json({"cmd": "entrar", "nome": nome_torto})
+        resposta = ws.receive_json()
+        assert resposta["tipo"] in ("voce", "erro")
+        # `None` cai no `or ""` e vira nome vazio, que a sala recusa.
+        if nome_torto is None:
+            assert resposta["tipo"] == "erro"
+        # O socket continua utilizável depois da recusa.
+        ws.send_json({"cmd": "entrar", "nome": "Ana"})
+        assert ws.receive_json()["tipo"] in ("voce", "erro")
+
+
 def test_comando_de_host_pelo_socket_de_jogador_nao_faz_nada(client):
     from jogo.main import sala as sala_do_app
 
