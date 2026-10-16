@@ -2998,6 +2998,7 @@ Crie `jogo/static/controle.js`:
   "use strict";
 
   var CHAVE_ID = "grama-jogo-id";
+  var CHAVE_NOME = "grama-jogo-nome";
   var CHAVE_CHUTE = "grama-jogo-chute";
   var ESPERA_RECONEXAO_MS = 1500;
 
@@ -3024,7 +3025,12 @@ Crie `jogo/static/controle.js`:
     return valor.toFixed(1).replace(".", ",") + " cm";
   }
 
+  // O id é a credencial que o servidor exige em `chutar` e `voltar`, e ele
+  // chega só no frame `voce`. O nome é o que identifica a própria linha no
+  // payload de broadcast, que não traz id de ninguém — senão qualquer
+  // visitante com a aba Rede aberta chutaria em nome de outro.
   var meuId = localStorage.getItem(CHAVE_ID);
+  var meuNome = localStorage.getItem(CHAVE_NOME);
   var meuChute = localStorage.getItem(CHAVE_CHUTE);
   var ws = null;
 
@@ -3041,7 +3047,9 @@ Crie `jogo/static/controle.js`:
       var msg = JSON.parse(evento.data);
       if (msg.tipo === "voce") {
         meuId = msg.id;
+        meuNome = msg.nome;
         localStorage.setItem(CHAVE_ID, meuId);
+        localStorage.setItem(CHAVE_NOME, meuNome);
         el("meu-nome").textContent = msg.nome;
         mostrar("tela-chute");
         avisar("");
@@ -3060,13 +3068,17 @@ Crie `jogo/static/controle.js`:
   }
 
   function aplicarEstado(estado) {
-    var souJogador = estado.jogadores.some(function (j) { return j.id === meuId; });
+    // Compara por nome: o payload não traz id. A sala garante nome único por
+    // rodada, então isso identifica sem expor credencial.
+    var souJogador = estado.jogadores.some(function (j) { return j.nome === meuNome; });
 
     if (!souJogador) {
       // Saiu da sala (nova rodada, por exemplo): limpa e volta pra entrada.
       localStorage.removeItem(CHAVE_ID);
+      localStorage.removeItem(CHAVE_NOME);
       localStorage.removeItem(CHAVE_CHUTE);
       meuId = null;
+      meuNome = null;
       meuChute = null;
       el("chute").value = "";
       el("confirmacao").classList.add("oculto");
@@ -3098,7 +3110,7 @@ Crie `jogo/static/controle.js`:
     if (estado.estado === "RESULTADO") {
       var minha = null;
       estado.ranking.forEach(function (linha) {
-        if (linha.id === meuId) { minha = linha; }
+        if (linha.nome === meuNome) { minha = linha; }
       });
       if (!minha) {
         el("texto-espera").textContent = "Você não chutou nessa rodada!";
