@@ -960,9 +960,9 @@ def test_nova_rodada_limpa_tudo_e_reabre():
     sala, (id_ana,) = _sala_com("Ana")
     sala.chutar_por_id(id_ana, 10.0)
     sala.definir_trava(True)
-    sala.iniciar_medicao()
-    sala.concluir_medicao(17.5, 0.4, "ALTA", "iVBOR")
-    sala.revelacao_terminou()
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", "iVBOR")
+    sala.revelacao_terminou(ticket)
 
     sala.nova_rodada()
 
