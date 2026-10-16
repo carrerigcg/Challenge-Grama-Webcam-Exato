@@ -4,6 +4,10 @@ Nenhuma fixture de `conftest.py` é usada: o jogo não tem banco. Os tokens são
 injetados por `monkeypatch.setenv` e lidos a cada requisição, então não é
 preciso recarregar o módulo entre casos.
 """
+import asyncio
+import faulthandler
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -24,9 +28,39 @@ def app(monkeypatch):
     return app
 
 
+@pytest.fixture(autouse=True)
+def _watchdog():
+    """Teste que trava bloqueia o CI sem dizer por quê; este mata o processo
+    com o traceback de todas as threads. Só dispara se algo travar de verdade."""
+    faulthandler.dump_traceback_later(30, exit=True)
+    yield
+    faulthandler.cancel_dump_traceback_later()
+
+
 @pytest.fixture
 def client(app):
-    return TestClient(app)
+    """TestClient como context manager: UMA thread/loop para todos os sockets.
+
+    Sem o `with`, cada `websocket_connect` abre o próprio portal (thread +
+    loop). O servidor, que em produção roda num loop só, passa a escrever num
+    socket cujo loop mora em outra thread; `asyncio.Event.set` não é
+    thread-safe, e se o leitor já estava esperando o loop dele não acorda — o
+    `receive_json()` do teste pendura para sempre. Todo socket aberto aqui tem
+    de ser fechado com `__exit__` (não só `.close()`): o portal compartilhado
+    espera as sessões terminarem para encerrar.
+    """
+    from jogo.main import _tarefas_em_voo
+
+    async def drenar():
+        # Task de medição que sobrou de um teste não pode vazar para o próximo.
+        pendentes = list(_tarefas_em_voo)
+        for t in pendentes:
+            t.cancel()
+        await asyncio.gather(*pendentes, return_exceptions=True)
+
+    with TestClient(app) as c:
+        yield c
+        c.portal.call(drenar)
 
 
 def test_raiz_serve_a_tela_do_controle(client):
@@ -323,7 +357,7 @@ def test_chute_com_inteiro_gigante_nao_derruba_o_socket(client):
         client_ws.send_json({"cmd": "chutar", "id": id_ana, "valor_cm": 16.0})
         assert client_ws.receive_json()["tipo"] == "estado"
     finally:
-        client_ws.close()
+        client_ws.__exit__(None, None, None)
 
 
 def test_entrar_com_nome_que_nao_e_texto_e_recusado(client):
@@ -435,10 +469,10 @@ def test_ponte_nova_assume_e_recebe_a_ordem_de_medir(client):
                 assert segunda.receive_json()["cmd"] == "medir"
     finally:
         try:
-            primeira.close()  # o servidor já fechou este; fechar de novo levanta
+            primeira.__exit__(None, None, None)  # o servidor já fechou este; fechar de novo levanta
         except Exception:
             pass
-        ws_jogador.close()
+        ws_jogador.__exit__(None, None, None)
 
 
 def test_host_sem_token_no_socket_e_recusado(client):
@@ -457,7 +491,7 @@ def test_medir_sem_ponte_devolve_erro_ao_host(client):
             assert resposta["tipo"] == "erro"
             assert "ponte" in resposta["mensagem"]
     finally:
-        ws_jogador.close()
+        ws_jogador.__exit__(None, None, None)
 
 
 def test_medir_percorre_medindo_revelando_resultado(client, monkeypatch):
@@ -492,7 +526,7 @@ def test_medir_percorre_medindo_revelando_resultado(client, monkeypatch):
                 assert resultado["ranking"][0]["nome"] == "Ana"
                 assert resultado["ranking"][0]["erro_cm"] == 1.5
     finally:
-        ws_jogador.close()
+        ws_jogador.__exit__(None, None, None)
 
 
 def test_erro_da_ponte_volta_para_aguardando_preservando_chutes(client):
@@ -513,7 +547,7 @@ def test_erro_da_ponte_volta_para_aguardando_preservando_chutes(client):
                 assert estado["erro"] == "A câmera não respondeu."
                 assert estado["quantos_chutaram"] == 1
     finally:
-        ws_jogador.close()
+        ws_jogador.__exit__(None, None, None)
 
 
 def test_medir_sem_ninguem_ter_chutado_devolve_erro(client):
@@ -570,7 +604,7 @@ def test_resposta_atrasada_depois_de_reset_nao_revela_nada(client):
                 assert estado["aberta"] is False
                 assert estado["altura_cm"] is None
     finally:
-        ws_jogador.close()
+        ws_jogador.__exit__(None, None, None)
 
 
 def test_erro_da_ponte_sem_id_nao_derruba_a_medicao(client):
@@ -597,7 +631,7 @@ def test_erro_da_ponte_sem_id_nao_derruba_a_medicao(client):
                 assert estado["estado"] == "MEDINDO"
                 assert estado["erro"] is None
     finally:
-        ws_jogador.close()
+        ws_jogador.__exit__(None, None, None)
 
 
 def test_host_trava_e_destrava_a_sala(client):
@@ -619,4 +653,53 @@ def test_host_nova_rodada_limpa_a_sala(client):
             assert estado["jogadores"] == []
             assert estado["estado"] == "AGUARDANDO"
     finally:
-        ws_jogador.close()
+        ws_jogador.__exit__(None, None, None)
+
+
+def _receber(ws, prazo_s=5.0):
+    """`receive_json` com prazo: falha em vez de pendurar."""
+    saida = {}
+
+    def ler():
+        try:
+            saida["v"] = ws.receive_json()
+        except BaseException as e:  # noqa: BLE001 - repassado abaixo
+            saida["e"] = e
+
+    t = threading.Thread(target=ler, daemon=True)
+    t.start()
+    t.join(prazo_s)
+    if t.is_alive():
+        pytest.fail(f"nenhum frame em {prazo_s}s: o wake-up do socket se perdeu")
+    if "e" in saida:
+        raise saida["e"]
+    return saida["v"]
+
+
+def test_ordem_chega_na_ponte_mesmo_quando_a_task_de_medicao_demora(client, monkeypatch):
+    """Regressão do pendurado intermitente da suíte (1 em ~100 execuções).
+
+    O teste lê da ponte (`receive`) ANTES de a task de medição escrever nela. Se
+    ponte e host moram em loops de threads diferentes, o `set` do evento de
+    leitura vem de outra thread e o loop da ponte não acorda. O atraso de 50 ms
+    na task transforma a corrida rara em determinística.
+    """
+    import jogo.medicao as medicao
+
+    original = medicao.Medidor.medir
+
+    async def medir_atrasado(self):
+        await asyncio.sleep(0.05)
+        return await original(self)
+
+    monkeypatch.setattr(medicao.Medidor, "medir", medir_atrasado)
+    ws_jogador, _ = _jogador_que_chutou(client)
+    try:
+        with client.websocket_connect(f"/ws/ponte?token={PONTE_TOKEN}") as ponte:
+            with client.websocket_connect(f"/ws/host?token={HOST_TOKEN}") as host:
+                host.receive_json()
+                host.send_json({"cmd": "medir"})
+                assert _receber(host)["estado"] == "MEDINDO"
+                assert _receber(ponte)["cmd"] == "medir"
+    finally:
+        ws_jogador.__exit__(None, None, None)
