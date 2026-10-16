@@ -513,7 +513,11 @@ Acrescente ao fim de `tests/test_jogo_sala.py`:
 ```python
 def test_iniciar_medicao_exige_pelo_menos_um_chute():
     sala, _ = _sala_com("Ana")
-    with pytest.raises(ErroDeJogo, match="chute"):
+    # A frase inteira, não só "chutou": `iniciar_medicao` levanta dois erros
+    # diferentes, e o teste precisa fixar qual dos dois disparou. (O `match`
+    # original dizia "chute", que não é substring de "chutou" — o teste e a
+    # mensagem não podiam passar juntos.)
+    with pytest.raises(ErroDeJogo, match="Ninguém chutou"):
         sala.iniciar_medicao()
 
 
