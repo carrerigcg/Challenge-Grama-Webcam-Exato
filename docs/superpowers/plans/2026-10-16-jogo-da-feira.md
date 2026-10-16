@@ -2016,6 +2016,50 @@ def test_entrar_com_nome_de_tipo_errado_nao_derruba_o_socket(client, nome_torto)
         assert ws.receive_json()["tipo"] in ("voce", "erro")
 
 
+def test_payload_tem_exatamente_as_chaves_do_contrato(app):
+    """O payload é o contrato que os dois frontends consomem.
+
+    Testado direto, sem WebSocket: `estado_atual` é função comum. Chave que
+    entra ou sai sem o JS saber quebra uma tela que só se vê no navegador.
+    """
+    from jogo.main import estado_atual
+
+    assert set(estado_atual()) == {
+        "tipo", "estado", "aberta", "ponte_conectada", "jogadores",
+        "quantos_chutaram", "altura_cm", "margem_cm", "categoria",
+        "imagem_b64", "erro", "ranking",
+    }
+
+
+def test_payload_esconde_o_ranking_antes_do_resultado(app):
+    from jogo.main import estado_atual, sala
+
+    id_ana = sala.entrar("Ana").id
+    sala.chutar_por_id(id_ana, 16.0)
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", None)
+
+    # A sala já devolve ranking em REVELANDO, mas o payload é um só para
+    # todos: o vencedor não pode chegar ao celular antes de o palco revelar.
+    assert estado_atual()["estado"] == "REVELANDO"
+    assert estado_atual()["ranking"] == []
+
+    sala.revelacao_terminou(ticket)
+    assert estado_atual()["ranking"][0]["nome"] == "Ana"
+
+
+def test_payload_nunca_traz_o_valor_do_chute(app):
+    from jogo.main import estado_atual, sala
+
+    id_ana = sala.entrar("Ana").id
+    sala.chutar_por_id(id_ana, 15.5)
+    payload = estado_atual()
+    assert payload["jogadores"][0]["chutou"] is True
+    assert payload["quantos_chutaram"] == 1
+    # Todos olham a mesma tela grande: o último a chutar copiaria o vizinho.
+    assert "15.5" not in str(payload)
+
+
 def test_comando_de_host_pelo_socket_de_jogador_nao_faz_nada(client):
     from jogo.main import sala as sala_do_app
 
@@ -2161,7 +2205,7 @@ async def ws_palco(ws: WebSocket):
 - [ ] **Step 4: Rodar os testes**
 
 Run: `python -m pytest tests/test_jogo_api.py -v`
-Expected: PASS nos 17 testes.
+Expected: PASS nos 20 testes.
 
 - [ ] **Step 5: Commit**
 
@@ -3065,6 +3109,7 @@ Substitua `jogo/templates/palco.html`:
     <section id="cena-aguardando" class="cena">
       <div class="coluna-qr">
         <img src="/qr.svg" alt="QR code para entrar no jogo" class="qr">
+        <p id="url-do-jogo" class="url-do-jogo"></p>
         <p class="legenda-qr">escaneia e entra</p>
       </div>
       <div class="coluna-jogo">
@@ -3136,7 +3181,11 @@ body { display: flex; flex-direction: column; min-height: 100vh; }
 
 .coluna-qr { text-align: center; flex-shrink: 0; }
 .qr { width: 220px; height: 220px; display: block; }
-.legenda-qr { color: var(--cinza-sec); margin: 12px 0 0; font-size: 0.9375rem; }
+.url-do-jogo {
+  margin: 12px 0 0; font-size: 1rem; font-weight: 600;
+  color: var(--verde-escuro); word-break: break-all;
+}
+.legenda-qr { color: var(--cinza-sec); margin: 4px 0 0; font-size: 0.9375rem; }
 
 .coluna-jogo { flex: 1; }
 
@@ -3275,6 +3324,15 @@ Crie `jogo/static/palco.js`:
   var token = new URLSearchParams(location.search).get("token") || "";
   var ws = null;
   var estadoAnterior = null;
+
+  // A URL em texto ao lado do QR é a defesa contra QR errado: sem
+  // JOGO_URL_PUBLICA definida, o servidor monta o QR com o que o proxy
+  // disser, e isso pode apontar para um endereço interno. Com o texto à
+  // vista, o apresentador percebe antes do primeiro grupo escanear.
+  el("url-do-jogo").textContent = location.origin + "/";
+  // E o token sai da barra de endereço, para não aparecer quando ele mostra
+  // a tela para alguém.
+  if (token) { history.replaceState(null, "", location.pathname); }
 
   var CENAS = ["cena-aguardando", "cena-medindo", "cena-revelando", "cena-resultado"];
   function cena(id) {
@@ -4189,7 +4247,7 @@ com a mesma assinatura nas Tasks 7, 8 e nos testes. `Medidor.conectar`,
 `desconectar`, `medir`, `entregar_resultado`, `entregar_erro`, `conectado`,
 `canal` — definidos na Task 5, usados na 8. `enviar_em_background` definido na
 Task 9 e importado na 8, que é por isso que a Task 8 fecha vermelha e a 9
-resolve. O payload de estado tem as mesmas treze chaves na Task 7, nos testes da
+resolve. O payload de estado tem as mesmas doze chaves na Task 7, nos testes da
 Task 8 e nos dois JS das Tasks 10 e 11. Na ponte, `CALIBRATION_PATH`,
 `DEBUG_PATH`, `ler_imagem_b64`, `medir`, `processar`, `espera_do_backoff`,
 `url_do_websocket`, `bater_no_keep_alive` e `BACKOFF_MAX_S` são os mesmos nomes
