@@ -1097,7 +1097,6 @@ git commit -m "feat(jogo): nova rodada de qualquer estado, reabrindo a sala"
 **Files:**
 - Create: `jogo/medicao.py`
 - Modify: `requirements-dev.txt`
-- Create: `pytest.ini`
 - Test: `tests/test_jogo_medicao.py`
 
 A ponte é um WebSocket que vive no servidor. Quem pede a medição manda a ordem
@@ -1114,15 +1113,17 @@ pip install pytest-asyncio
 Acrescente ao fim de `requirements-dev.txt`:
 
 ```
-pytest-asyncio
+# Com pin, ao contrário do resto do arquivo: é a única dependência cujo
+# comportamento muda a semântica de configuração (modos, escopo de loop), e
+# isso já mudou entre a 0.x e a 1.x.
+pytest-asyncio>=1.0
 ```
 
-Crie `pytest.ini` na raiz:
-
-```ini
-[pytest]
-asyncio_mode = auto
-```
+**Não crie `pytest.ini`.** A tentação é `asyncio_mode = auto`, mas isso valeria
+para o repositório inteiro — os ~190 testes síncronos da API inclusive — e o
+`pytest.ini` tem precedência sobre `pyproject.toml`, `tox.ini` e `setup.cfg`,
+silenciando config futura sem avisar. O modo estrito com `pytestmark` no módulo
+de teste resolve sem tocar em nada fora do jogo.
 
 - [ ] **Step 2: Escrever os testes que falham**
 
@@ -1140,6 +1141,12 @@ import pytest
 
 from jogo.medicao import ErroDeMedicao, Medidor
 
+# Modo estrito do pytest-asyncio, marcado no módulo. A alternativa seria um
+# `pytest.ini` com `asyncio_mode = auto`, mas ele valeria para o repositório
+# inteiro (os ~190 testes síncronos da API inclusive) e teria precedência sobre
+# um `pyproject.toml` futuro, silenciando config nova sem avisar.
+pytestmark = pytest.mark.asyncio
+
 
 class CanalFalso:
     """Faz o papel do WebSocket da ponte: guarda as ordens enviadas."""
@@ -1149,6 +1156,20 @@ class CanalFalso:
 
     async def send_json(self, dados):
         self.ordens.append(dados)
+
+
+async def esperar_ordem(canal: CanalFalso, giros: int = 10_000) -> dict:
+    """Espera a ordem de medir aparecer no canal, com teto. Devolve a ordem.
+
+    O teto existe porque `while not canal.ordens: await asyncio.sleep(0)` sem
+    limite pendura a suíte para sempre se um bug impedir o envio — e suíte
+    pendurada é pior que teste que falha, porque trava o CI sem dizer por quê.
+    """
+    for _ in range(giros):
+        if canal.ordens:
+            return canal.ordens[-1]
+        await asyncio.sleep(0)
+    raise AssertionError("a ordem de medir nunca saiu no canal")
 
 
 async def test_medir_sem_ponte_conectada_falha_na_hora():
@@ -1165,17 +1186,16 @@ async def test_medir_manda_a_ordem_e_devolve_o_resultado():
     assert medidor.conectado is True
 
     async def responder():
-        while not canal.ordens:  # espera a ordem sair
-            await asyncio.sleep(0)
+        ordem = await esperar_ordem(canal)
         medidor.entregar_resultado(
             {"altura_cm": 17.5, "margem_cm": 0.4, "categoria": "ALTA",
-             "imagem_b64": "iVBOR"}
+             "imagem_b64": "iVBOR", "id": ordem["id"]}
         )
 
     asyncio.create_task(responder())
     resultado = await medidor.medir()
 
-    assert canal.ordens == [{"cmd": "medir"}]
+    assert canal.ordens == [{"cmd": "medir", "id": 1}]
     assert resultado["altura_cm"] == 17.5
     assert resultado["categoria"] == "ALTA"
 
@@ -1186,8 +1206,7 @@ async def test_medir_propaga_erro_reportado_pela_ponte():
     medidor.conectar(canal)
 
     async def responder():
-        while not canal.ordens:
-            await asyncio.sleep(0)
+        await esperar_ordem(canal)
         medidor.entregar_erro("A câmera não respondeu.")
 
     asyncio.create_task(responder())
@@ -1208,8 +1227,7 @@ async def test_desconectar_no_meio_da_medicao_falha_a_espera():
     medidor.conectar(canal)
 
     async def derrubar():
-        while not canal.ordens:
-            await asyncio.sleep(0)
+        await esperar_ordem(canal)
         medidor.desconectar(canal)
 
     asyncio.create_task(derrubar())
@@ -1217,14 +1235,44 @@ async def test_desconectar_no_meio_da_medicao_falha_a_espera():
         await medidor.medir()
 
 
-async def test_segunda_ponte_e_recusada():
+async def test_ponte_nova_assume_o_lugar_da_antiga():
+    """Reconexão depois de o Wi-Fi piscar não pode ficar travada esperando o
+    servidor notar que o socket velho morreu."""
     medidor = Medidor()
-    primeira = CanalFalso()
-    medidor.conectar(primeira)
-    with pytest.raises(ErroDeMedicao, match="outra ponte"):
+    antiga = CanalFalso()
+    assert medidor.conectar(antiga) is None
+
+    nova = CanalFalso()
+    # Devolve a antiga para o chamador fechar o socket.
+    assert medidor.conectar(nova) is antiga
+    assert medidor.canal is nova
+
+    # O handler da ponte velha acorda depois e não pode derrubar a nova.
+    medidor.desconectar(antiga)
+    assert medidor.canal is nova
+
+    async def responder():
+        ordem = await esperar_ordem(nova)
+        medidor.entregar_resultado({"altura_cm": 9.0, "id": ordem["id"]})
+
+    asyncio.create_task(responder())
+    assert (await medidor.medir())["altura_cm"] == 9.0
+
+
+async def test_troca_de_ponte_falha_a_medicao_em_voo():
+    medidor = Medidor()
+    antiga = CanalFalso()
+    medidor.conectar(antiga)
+
+    async def trocar():
+        await esperar_ordem(antiga)
         medidor.conectar(CanalFalso())
-    # A primeira continua valendo: duas câmeras disputando a ordem é pior.
-    assert medidor.canal is primeira
+
+    asyncio.create_task(trocar())
+    # A ordem foi para o socket velho; o notebook que reconectou não vai
+    # responder a ela, então esta medição tem de falhar em vez de pendurar.
+    with pytest.raises(ErroDeMedicao, match="reconectou"):
+        await medidor.medir()
 
 
 async def test_medir_recusa_medicao_concorrente():
@@ -1234,25 +1282,37 @@ async def test_medir_recusa_medicao_concorrente():
     erro_da_segunda = []
 
     async def segunda_chamada():
-        while not canal.ordens:  # espera a primeira ordem sair
-            await asyncio.sleep(0)
+        await esperar_ordem(canal)  # espera a primeira ordem sair
         try:
             await medidor.medir()
         except ErroDeMedicao as e:
             erro_da_segunda.append(str(e))
         # Completa a primeira medição em qualquer caso: se a asserção morasse
         # aqui dentro e falhasse, a exceção ficaria engolida na task, o
-        # `entregar_resultado` não rodaria, e o teste só falharia 30s depois
+        # `entregar_resultado` não rodaria, e o teste só falharia 15s depois
         # com a mensagem errada ("demorou"). Asserção fica no corpo principal.
-        medidor.entregar_resultado({"altura_cm": 17.5})
+        ordem = canal.ordens[0]
+        medidor.entregar_resultado({"altura_cm": 17.5, "id": ordem["id"]})
 
     asyncio.create_task(segunda_chamada())
     resultado = await medidor.medir()
 
     assert resultado["altura_cm"] == 17.5
     # Uma ordem só saiu: a segunda nem chegou ao canal.
-    assert canal.ordens == [{"cmd": "medir"}]
+    assert canal.ordens == [{"cmd": "medir", "id": 1}]
     assert erro_da_segunda and "em andamento" in erro_da_segunda[0]
+
+
+async def test_desconectar_canal_antigo_nao_derruba_o_atual():
+    medidor = Medidor()
+    antigo = CanalFalso()
+    medidor.conectar(antigo)
+    medidor.desconectar(antigo)
+    novo = CanalFalso()
+    medidor.conectar(novo)
+    medidor.desconectar(antigo)  # chegou atrasado
+    assert medidor.conectado is True
+    assert medidor.canal is novo
 
 
 async def test_canal_que_quebra_no_envio_nao_trava_o_medidor():
@@ -1281,25 +1341,117 @@ async def test_canal_que_quebra_no_envio_nao_trava_o_medidor():
     medidor.conectar(canal)
 
     async def responder():
-        while not canal.ordens:
-            await asyncio.sleep(0)
-        medidor.entregar_resultado({"altura_cm": 9.0})
+        ordem = await esperar_ordem(canal)
+        medidor.entregar_resultado({"altura_cm": 9.0, "id": ordem["id"]})
 
     asyncio.create_task(responder())
     resultado = await medidor.medir()
     assert resultado["altura_cm"] == 9.0
 
 
-async def test_desconectar_canal_antigo_nao_derruba_o_atual():
+async def test_resposta_de_ordem_antiga_e_descartada():
+    """O bug grave: a altura de uma rodada que já acabou revelada como se fosse
+    da atual, sem erro nenhum."""
+    medidor = Medidor(timeout_s=0.05)
+    canal = CanalFalso()
+    medidor.conectar(canal)
+
+    # Medição 1 estoura o timeout sem resposta.
+    with pytest.raises(ErroDeMedicao, match="demorou"):
+        await medidor.medir()
+    id_antigo = canal.ordens[0]["id"]
+
+    # Medição 2 começa. A resposta atrasada da ordem 1 chega agora.
+    async def responder():
+        ordem = await esperar_ordem(canal)
+        medidor.entregar_resultado({"altura_cm": 99.0, "id": id_antigo})
+        medidor.entregar_resultado({"altura_cm": 9.0, "id": ordem["id"]})
+
+    asyncio.create_task(responder())
+    resultado = await medidor.medir()
+    # A altura da ordem velha não pode vazar para esta medição.
+    assert resultado["altura_cm"] == 9.0
+
+
+async def test_erro_de_ordem_antiga_nao_derruba_a_medicao_atual():
+    medidor = Medidor(timeout_s=0.05)
+    canal = CanalFalso()
+    medidor.conectar(canal)
+    with pytest.raises(ErroDeMedicao, match="demorou"):
+        await medidor.medir()
+    id_antigo = canal.ordens[0]["id"]
+
+    async def responder():
+        ordem = await esperar_ordem(canal)
+        medidor.entregar_erro("falha da ordem velha", id_antigo)
+        medidor.entregar_resultado({"altura_cm": 9.0, "id": ordem["id"]})
+
+    asyncio.create_task(responder())
+    resultado = await medidor.medir()
+    assert resultado["altura_cm"] == 9.0
+
+
+async def test_entregar_sem_medicao_em_andamento_nao_faz_nada():
     medidor = Medidor()
-    antigo = CanalFalso()
-    medidor.conectar(antigo)
-    medidor.desconectar(antigo)
-    novo = CanalFalso()
-    medidor.conectar(novo)
-    medidor.desconectar(antigo)  # chegou atrasado
-    assert medidor.conectado is True
-    assert medidor.canal is novo
+    medidor.conectar(CanalFalso())
+    # Não deve levantar nem deixar estado pendurado.
+    medidor.entregar_resultado({"altura_cm": 17.5, "id": 1})
+    medidor.entregar_erro("ninguém pediu nada")
+    assert medidor._esperando is None
+
+async def test_medicao_que_acorda_tarde_nao_apaga_o_future_da_seguinte():
+    """O `finally` de uma medição não pode apagar o future de outra.
+
+    Precisa das duas medições SOBREPOSTAS: a primeira acordando depois de a
+    segunda já ter registrado o future dela. A primeira versão deste teste
+    aguardava a primeira medição inline, então ela terminava antes de a
+    segunda existir — e passava com o bug presente. Um teste de mutação expôs
+    isso: sabotar o `finally` não a fazia falhar.
+
+    A ordem depende do agendamento do asyncio. No 3.11 o `wait_for` usa um
+    callback intermediário, então o primeiro passo da segunda medição roda
+    antes de a primeira retomar; no 3.12 isso mudou. Por isso a pré-condição é
+    afirmada no meio do teste: se o agendamento inverter, ele falha avisando,
+    em vez de passar sem exercer nada.
+
+    Alcança `_esperando`, que é privado, de propósito: a pré-condição é sobre
+    agendamento, e não há jeito público de observá-la.
+    """
+    medidor = Medidor(timeout_s=0.5)
+    primeira = CanalFalso()
+    medidor.conectar(primeira)
+
+    tarefa_a = asyncio.create_task(medidor.medir())
+    await esperar_ordem(primeira)
+    futuro_a = medidor._esperando
+
+    # Daqui até o create_task de B não pode haver await: é o que mantém A
+    # agendada e ainda não retomada.
+    medidor.desconectar(primeira)
+    segunda = CanalFalso()
+    medidor.conectar(segunda)
+    tarefa_b = asyncio.create_task(medidor.medir())
+
+    await asyncio.sleep(0)  # deixa só o primeiro passo de B rodar
+
+    futuro_b = medidor._esperando
+    assert futuro_b is not None and futuro_b is not futuro_a, (
+        "a segunda medição não registrou o future antes de a primeira acordar: "
+        "o agendamento do asyncio mudou e este teste parou de exercer o bug"
+    )
+    assert not tarefa_a.done(), (
+        "a primeira medição já acordou: sem sobreposição, o bug não aparece"
+    )
+
+    with pytest.raises(ErroDeMedicao, match="caiu no meio"):
+        await tarefa_a
+
+    # Sem a checagem de identidade no `finally`, A apagou o future de B aqui, e
+    # esta resposta é descartada — B estoura o timeout em vez de devolver 9.0.
+    ordem = segunda.ordens[-1]
+    medidor.entregar_resultado({"altura_cm": 9.0, "id": ordem["id"]})
+    resultado = await tarefa_b
+    assert resultado["altura_cm"] == 9.0
 ```
 
 - [ ] **Step 3: Rodar e confirmar que falha**
@@ -1318,6 +1470,11 @@ A ordem de medir sai por um canal (o WebSocket da ponte) e a resposta volta
 por uma task diferente, que está lendo esse mesmo socket. Por isso `medir()`
 cria um `Future` e aguarda, e `entregar_resultado()` o completa.
 
+Cada ordem leva um `id`, e a ponte devolve o mesmo `id`. Sem isso, a resposta
+atrasada de uma ordem que já estourou o timeout é entregue como resposta da
+medição em curso, e o palco revela a altura de uma rodada que acabou — sem
+erro nenhum, o que é pior que uma falha visível.
+
 Uma implementação só, de propósito. A costura existe para que os testes
 possam falsificar a medição e rodar sem webcam — não para abrir espaço a uma
 segunda fonte hipotética.
@@ -1327,9 +1484,11 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Protocol
 
-# 30s cobre folgado os ~3s do pipeline mais a ida e volta pela internet. Acima
-# disso é ponte muda, não ponte lenta.
-TIMEOUT_PADRAO_S = 30.0
+# 15s dá cinco vezes a folga do pipeline (~3s) mais a ida e volta pela
+# internet. Era 30s, e 30s de palco congelado é tempo demais na frente do
+# grupo. Encurtar só é seguro porque o `id` faz a resposta atrasada ser
+# descartada em vez de confundida com a medição seguinte.
+TIMEOUT_PADRAO_S = 15.0
 
 
 class Canal(Protocol):
@@ -1347,6 +1506,8 @@ class Medidor:
         self.canal: Canal | None = None
         self._timeout_s = timeout_s
         self._esperando: asyncio.Future | None = None
+        self._ordem = 0
+        self._ordem_esperada: int | None = None
 
     @property
     def conectado(self) -> bool:
@@ -1354,12 +1515,25 @@ class Medidor:
 
     # --- ciclo de vida da ponte ---------------------------------------------
 
-    def conectar(self, canal: Canal) -> None:
-        if self.canal is not None:
-            raise ErroDeMedicao(
-                "Já existe outra ponte conectada. Feche a outra antes."
-            )
+    def conectar(self, canal: Canal) -> Canal | None:
+        """Registra a ponte e devolve a anterior, que o chamador deve fechar.
+
+        Ponte nova assume o lugar da antiga em vez de ser recusada: na feira, a
+        segunda conexão é quase sempre o mesmo notebook reconectando depois de
+        o Wi-Fi piscar, e recusá-la travava a retomada até o servidor detectar
+        o socket morto — dezenas de segundos com o palco mostrando "câmera
+        offline".
+
+        A medição em voo falha junto: o notebook que reconectou não vai
+        responder a uma ordem que foi para o socket velho. É seguro porque
+        `desconectar` ignora canal que não é o atual, então o handler da ponte
+        velha, ao notar a queda, não derruba esta.
+        """
+        anterior = self.canal
         self.canal = canal
+        if anterior is not None:
+            self._falhar_espera("A ponte da câmera reconectou no meio da medição.")
+        return anterior
 
     def desconectar(self, canal: Canal) -> None:
         """Ignora canal que não é o atual: desconexão atrasada não derruba o novo."""
@@ -1375,34 +1549,61 @@ class Medidor:
             raise ErroDeMedicao("A ponte da câmera não está conectada.")
         if self._esperando is not None and not self._esperando.done():
             # Sem isto, a segunda chamada sobrescreve o future da primeira, que
-            # fica órfã esperando até estourar o timeout de 30s. A ponte também
+            # fica órfã esperando até estourar o timeout. A ponte também
             # processa uma ordem por vez, então a segunda só atrapalharia.
             raise ErroDeMedicao("Já existe uma medição em andamento.")
         laco = asyncio.get_running_loop()
-        # O future nasce ANTES do envio de propósito: `send_json` tem await, e
-        # a resposta da ponte pode ser processada durante ele. Com o future
-        # criado depois, `entregar_resultado` não acharia ninguém esperando,
-        # jogaria o resultado fora, e esta chamada aguardaria até o timeout.
-        self._esperando = laco.create_future()
+        self._ordem += 1
+        ordem = self._ordem
+        # O future vai numa variável LOCAL e é ela que o `wait_for` recebe.
+        # Reler `self._esperando` depois de um await deixa outra medição apagar
+        # este future: uma chamada que acorda tarde zera o atributo, e aí ou o
+        # `wait_for` recebe None (TypeError cru) ou o resultado da medição nova
+        # é descartado.
+        futuro = self._esperando = laco.create_future()
+        self._ordem_esperada = ordem
         try:
             try:
-                await self.canal.send_json({"cmd": "medir"})
+                await self.canal.send_json({"cmd": "medir", "id": ordem})
             except Exception as e:
                 # Só o envio é embrulhado. Um `except` largo em volta do
                 # `wait_for` também capturaria o ErroDeMedicao que a ponte
                 # entrega pelo future, e re-embrulharia a mensagem do palco.
                 raise ErroDeMedicao(f"Não deu para falar com a ponte: {e}") from None
-            return await asyncio.wait_for(self._esperando, timeout=self._timeout_s)
+            return await asyncio.wait_for(futuro, timeout=self._timeout_s)
         except asyncio.TimeoutError:
             raise ErroDeMedicao("A câmera demorou demais para responder.") from None
         finally:
-            self._esperando = None
+            # Só limpa se ainda for o nosso: outra medição pode já ter começado.
+            if self._esperando is futuro:
+                self._esperando = None
+                self._ordem_esperada = None
+            # Consome exceção que ninguém mais vai ler, senão o asyncio imprime
+            # "Future exception was never retrieved" no log de produção.
+            if futuro.done() and not futuro.cancelled():
+                futuro.exception()
 
     def entregar_resultado(self, resultado: dict) -> None:
-        if self._esperando is not None and not self._esperando.done():
-            self._esperando.set_result(resultado)
+        """Completa a medição em curso, se a resposta for dela.
 
-    def entregar_erro(self, motivo: str) -> None:
+        Resposta sem o `id` esperado é descartada em silêncio: ou é de uma
+        ordem que já estourou o timeout, ou é de uma ponte que não fala o
+        protocolo. Nos dois casos, aceitá-la revelaria a altura errada.
+        """
+        if self._esperando is None or self._esperando.done():
+            return
+        if resultado.get("id") != self._ordem_esperada:
+            return
+        self._esperando.set_result(resultado)
+
+    def entregar_erro(self, motivo: str, ordem: int | None = None) -> None:
+        """Falha a medição em curso.
+
+        `ordem` vem da ponte e é conferida. `None` significa falha local (a
+        desconexão do socket, por exemplo), que sempre vale para o future atual.
+        """
+        if ordem is not None and ordem != self._ordem_esperada:
+            return
         self._falhar_espera(motivo)
 
     def _falhar_espera(self, motivo: str) -> None:
@@ -1413,13 +1614,13 @@ class Medidor:
 - [ ] **Step 5: Rodar os testes**
 
 Run: `python -m pytest tests/test_jogo_medicao.py -v`
-Expected: PASS nos 9 testes.
+Expected: PASS nos 14 testes.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add jogo/medicao.py tests/test_jogo_medicao.py requirements-dev.txt pytest.ini
-git commit -m "feat(jogo): costura da medicao com timeout e ponte unica"
+git add jogo/medicao.py tests/test_jogo_medicao.py requirements-dev.txt
+git commit -m "feat(jogo): costura da medicao com id de correlacao e troca de ponte"
 ```
 
 ---
@@ -2263,7 +2464,11 @@ async def ws_ponte(ws: WebSocket, token: str | None = None):
             if msg.get("tipo") == "resultado":
                 medidor.entregar_resultado(msg)
             elif msg.get("tipo") == "erro":
-                medidor.entregar_erro(str(msg.get("mensagem", "Falha na câmera.")))
+                # O `id` vai adiante: um erro atrasado da ordem anterior não
+                # pode derrubar a medição em curso.
+                medidor.entregar_erro(
+                    str(msg.get("mensagem", "Falha na câmera.")), msg.get("id")
+                )
     except WebSocketDisconnect:
         pass
     finally:
@@ -2454,7 +2659,7 @@ def enviar_em_background(resultado: dict) -> None:
 - [ ] **Step 4: Rodar a suíte do jogo inteira**
 
 Run: `python -m pytest tests/test_jogo_sala.py tests/test_jogo_medicao.py tests/test_jogo_envio.py tests/test_jogo_api.py -v`
-Expected: PASS em tudo — 64 da sala, 9 da medição, 8 do envio, 28 da API.
+Expected: PASS em tudo — 64 da sala, 14 da medição, 8 do envio, 28 da API.
 
 - [ ] **Step 5: Commit**
 
@@ -3260,12 +3465,15 @@ async def principal():
     async with websockets.connect(URL) as ws:
         print("ponte falsa conectada")
         async for bruto in ws:
-            if json.loads(bruto).get("cmd") == "medir":
-                print("ordem recebida, respondendo 17.5")
+            ordem = json.loads(bruto)
+            if ordem.get("cmd") == "medir":
+                print(f"ordem {ordem.get('id')} recebida, respondendo 17.5")
                 await asyncio.sleep(1.5)  # finge o tempo do pipeline
+                # O `id` tem de voltar: sem ele o servidor descarta a resposta.
                 await ws.send(json.dumps({
                     "tipo": "resultado", "altura_cm": 17.5, "margem_cm": 0.4,
                     "categoria": "ALTA", "imagem_b64": None,
+                    "id": ordem.get("id"),
                 }))
 
 
@@ -3466,6 +3674,13 @@ def test_processar_ignora_ordem_desconhecida():
     assert ponte.processar(json.dumps({"cmd": "sei-la"}), CALIBRACAO) is None
 
 
+def test_processar_devolve_o_id_da_ordem(monkeypatch):
+    """Sem o eco do `id`, o servidor descarta toda resposta desta ponte."""
+    monkeypatch.setattr(ponte, "medir", lambda c: {"tipo": "resultado", "altura_cm": 9.0})
+    resposta = ponte.processar(json.dumps({"cmd": "medir", "id": 42}), CALIBRACAO)
+    assert resposta["id"] == 42
+
+
 def test_processar_ignora_json_quebrado():
     assert ponte.processar("nao e json", CALIBRACAO) is None
 ```
@@ -3610,7 +3825,12 @@ def processar(bruto: str, calibracao: dict) -> dict | None:
         return None
     if msg.get("cmd") != "medir":
         return None
-    return medir(calibracao)
+    resposta = medir(calibracao)
+    # Devolve o `id` da ordem. Sem ele o servidor descarta a resposta — é o que
+    # impede a resposta atrasada de uma ordem que já estourou o timeout ser
+    # revelada como se fosse da medição atual.
+    resposta["id"] = msg.get("id")
+    return resposta
 
 
 # --- keep-alive --------------------------------------------------------------
@@ -3678,7 +3898,7 @@ if __name__ == "__main__":
 - [ ] **Step 5: Rodar os testes**
 
 Run: `python -m pytest tests/test_jogo_ponte.py -v`
-Expected: PASS nos 12 testes (ou `skipped` na máquina sem `cv2`).
+Expected: PASS nos 13 testes (ou `skipped` na máquina sem `cv2`).
 
 - [ ] **Step 6: Verificar com a câmera de verdade**
 
