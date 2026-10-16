@@ -16,12 +16,12 @@ from pathlib import Path
 
 import qrcode
 import qrcode.image.svg
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from jogo.medicao import Medidor
-from jogo.sala import Sala
+from jogo.sala import ErroDeJogo, Estado, Sala
 
 PASTA = Path(__file__).parent
 
@@ -112,3 +112,110 @@ def qr(request: Request):
     buffer = io.BytesIO()
     imagem.save(buffer)
     return Response(content=buffer.getvalue(), media_type="image/svg+xml")
+
+
+# --- broadcast ---------------------------------------------------------------
+
+# Todos os clientes recebem o MESMO payload. Nenhum tem versão especial: é o que
+# mantém o broadcast trivial e impede vazamento acidental de chute.
+_clientes: set[WebSocket] = set()
+
+
+def estado_atual() -> dict:
+    return {
+        "tipo": "estado",
+        "estado": sala.estado.value,
+        "aberta": sala.aberta,
+        "ponte_conectada": medidor.conectado,
+        "jogadores": [
+            {"id": j.id, "nome": j.nome, "chutou": j.chute_cm is not None}
+            for j in sala.jogadores
+        ],
+        "quantos_chutaram": sala.quantos_chutaram(),
+        "altura_cm": sala.altura_cm,
+        "margem_cm": sala.margem_cm,
+        "categoria": sala.categoria,
+        "imagem_b64": sala.imagem_b64,
+        "erro": sala.erro,
+        # Só em RESULTADO: a sala devolve o ranking já em REVELANDO (o palco
+        # poderia querer), mas o payload é um só para todos, e mandá-lo antes
+        # entrega o vencedor ao celular antes de a animação revelar na tela
+        # grande. O palco não precisa dele em REVELANDO — ali ele só anima o
+        # contador.
+        "ranking": sala.ranking() if sala.estado is Estado.RESULTADO else [],
+    }
+
+
+async def transmitir() -> None:
+    payload = estado_atual()
+    for cliente in list(_clientes):
+        try:
+            await cliente.send_json(payload)
+        except Exception:
+            # Socket morto sai daqui; o `finally` do handler também remove, e
+            # descartar duas vezes de um set não custa nada.
+            _clientes.discard(cliente)
+
+
+# --- WebSocket dos jogadores -------------------------------------------------
+
+
+@app.websocket("/ws/jogador")
+async def ws_jogador(ws: WebSocket):
+    await ws.accept()
+    _clientes.add(ws)
+    try:
+        while True:
+            msg = await ws.receive_json()
+            cmd = msg.get("cmd")
+            try:
+                if cmd == "entrar":
+                    # `or ""` e não um default no get: um cliente que manda
+                    # "nome": null explicitamente faria str(None) == "None" e
+                    # entraria na sala com esse nome.
+                    jogador = sala.entrar(str(msg.get("nome") or ""))
+                    await ws.send_json(
+                        {"tipo": "voce", "id": jogador.id, "nome": jogador.nome}
+                    )
+                elif cmd == "voltar":
+                    jogador = sala.jogador(str(msg.get("id", "")))
+                    await ws.send_json(
+                        {"tipo": "voce", "id": jogador.id, "nome": jogador.nome}
+                    )
+                elif cmd == "chutar":
+                    sala.chutar_por_id(
+                        str(msg.get("id", "")), float(msg.get("valor_cm"))
+                    )
+                else:
+                    # Comandos de host não existem neste socket: mandar na mão
+                    # não faz nada.
+                    raise ErroDeJogo("Comando desconhecido.")
+            except ErroDeJogo as e:
+                await ws.send_json({"tipo": "erro", "mensagem": str(e)})
+                continue
+            except (TypeError, ValueError):
+                await ws.send_json({"tipo": "erro", "mensagem": "Digite um número."})
+                continue
+            await transmitir()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        _clientes.discard(ws)
+
+
+# --- WebSocket do palco ------------------------------------------------------
+
+
+@app.websocket("/ws/palco")
+async def ws_palco(ws: WebSocket):
+    """Palco sem token: só observa. Os comandos vivem em `/ws/host`."""
+    await ws.accept()
+    _clientes.add(ws)
+    await ws.send_json(estado_atual())
+    try:
+        while True:
+            await ws.receive_json()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        _clientes.discard(ws)

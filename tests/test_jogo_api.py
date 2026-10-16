@@ -121,3 +121,185 @@ def test_static_serve_o_css_e_nao_escapa_da_pasta(client):
     assert client.get("/static/comum.css").status_code == 200
     for tentativa in ("/static/../main.py", "/static/%2e%2e/main.py", "/static/"):
         assert client.get(tentativa).status_code == 404, tentativa
+
+
+def _entrar(ws, nome):
+    """Entra na sala e devolve o id. Consome o `voce` e o primeiro `estado`."""
+    ws.send_json({"cmd": "entrar", "nome": nome})
+    boas_vindas = ws.receive_json()
+    ws.receive_json()  # estado transmitido depois da entrada
+    return boas_vindas["id"]
+
+
+def test_jogador_entra_e_recebe_o_proprio_id(client):
+    with client.websocket_connect("/ws/jogador") as ws:
+        ws.send_json({"cmd": "entrar", "nome": "Ana"})
+        boas_vindas = ws.receive_json()
+        assert boas_vindas["tipo"] == "voce"
+        assert boas_vindas["id"]
+        assert boas_vindas["nome"] == "Ana"
+
+
+def test_estado_chega_depois_de_entrar(client):
+    with client.websocket_connect("/ws/jogador") as ws:
+        ws.send_json({"cmd": "entrar", "nome": "Ana"})
+        ws.receive_json()  # voce
+        estado = ws.receive_json()
+        assert estado["tipo"] == "estado"
+        assert estado["estado"] == "AGUARDANDO"
+        assert len(estado["jogadores"]) == 1
+        assert estado["jogadores"][0]["nome"] == "Ana"
+        assert estado["jogadores"][0]["chutou"] is False
+
+
+def test_nome_repetido_devolve_erro_sem_derrubar_o_socket(client):
+    with client.websocket_connect("/ws/jogador") as primeiro:
+        _entrar(primeiro, "Ana")
+        with client.websocket_connect("/ws/jogador") as segundo:
+            segundo.send_json({"cmd": "entrar", "nome": "Ana"})
+            resposta = segundo.receive_json()
+            assert resposta["tipo"] == "erro"
+            assert "nome" in resposta["mensagem"]
+            # O socket continua vivo: dá pra tentar outro nome.
+            segundo.send_json({"cmd": "entrar", "nome": "Bruno"})
+            assert segundo.receive_json()["tipo"] == "voce"
+
+
+def test_chute_nao_vaza_o_valor_no_estado(client):
+    with client.websocket_connect("/ws/jogador") as ws:
+        id_ana = _entrar(ws, "Ana")
+        ws.send_json({"cmd": "chutar", "id": id_ana, "valor_cm": 15.5})
+        estado = ws.receive_json()
+        assert estado["jogadores"][0]["chutou"] is True
+        assert estado["quantos_chutaram"] == 1
+        # O valor não pode estar em lugar nenhum do payload: todos olham a mesma
+        # tela grande e o último a chutar copiaria.
+        assert "15.5" not in str(estado)
+
+
+def test_chute_fora_da_faixa_devolve_erro(client):
+    with client.websocket_connect("/ws/jogador") as ws:
+        id_ana = _entrar(ws, "Ana")
+        ws.send_json({"cmd": "chutar", "id": id_ana, "valor_cm": 300})
+        resposta = ws.receive_json()
+        assert resposta["tipo"] == "erro"
+        assert "0 e 200" in resposta["mensagem"]
+
+
+def test_entrada_de_um_jogador_chega_no_palco(client):
+    with client.websocket_connect("/ws/palco") as palco:
+        palco.receive_json()  # estado inicial
+        with client.websocket_connect("/ws/jogador") as jogador:
+            jogador.send_json({"cmd": "entrar", "nome": "Ana"})
+            jogador.receive_json()  # voce
+            estado = palco.receive_json()
+            assert [j["nome"] for j in estado["jogadores"]] == ["Ana"]
+
+
+def test_jogador_reconecta_na_mesma_cadeira(client):
+    with client.websocket_connect("/ws/jogador") as ws:
+        id_ana = _entrar(ws, "Ana")
+        ws.send_json({"cmd": "chutar", "id": id_ana, "valor_cm": 15.5})
+        ws.receive_json()
+
+    # Celular bloqueou a tela e o socket caiu.
+    with client.websocket_connect("/ws/jogador") as ws:
+        ws.send_json({"cmd": "voltar", "id": id_ana})
+        resposta = ws.receive_json()
+        assert resposta["tipo"] == "voce"
+        assert resposta["id"] == id_ana
+        assert resposta["nome"] == "Ana"
+        estado = ws.receive_json()
+        # Não virou fantasma nem cadeira nova.
+        assert len(estado["jogadores"]) == 1
+        assert estado["quantos_chutaram"] == 1
+
+
+def test_voltar_com_id_desconhecido_devolve_erro(client):
+    with client.websocket_connect("/ws/jogador") as ws:
+        ws.send_json({"cmd": "voltar", "id": "nao-existe"})
+        assert ws.receive_json()["tipo"] == "erro"
+
+
+@pytest.mark.parametrize("nome_torto", [None, 123, ["Ana"], {"a": 1}])
+def test_entrar_com_nome_de_tipo_errado_nao_derruba_o_socket(client, nome_torto):
+    """A URL é pública: o payload pode vir de qualquer cliente, não só do nosso.
+
+    O `str(... or "")` do handler transforma qualquer coisa em texto, e daí a
+    sala decide. O que não pode é a conexão morrer — um socket derrubado por
+    payload torto deixaria o visitante com a tela travada sem explicação.
+    """
+    with client.websocket_connect("/ws/jogador") as ws:
+        ws.send_json({"cmd": "entrar", "nome": nome_torto})
+        resposta = ws.receive_json()
+        assert resposta["tipo"] in ("voce", "erro")
+        # `None` cai no `or ""` e vira nome vazio, que a sala recusa.
+        if nome_torto is None:
+            assert resposta["tipo"] == "erro"
+        if resposta["tipo"] == "voce":
+            # Entrada aceita transmite o estado; sem consumir, a leitura
+            # seguinte pegaria esse broadcast em vez da resposta ao 2o comando.
+            assert ws.receive_json()["tipo"] == "estado"
+        # O socket continua utilizável depois da recusa.
+        ws.send_json({"cmd": "entrar", "nome": "Ana"})
+        assert ws.receive_json()["tipo"] in ("voce", "erro")
+
+
+def test_payload_tem_exatamente_as_chaves_do_contrato(app):
+    """O payload é o contrato que os dois frontends consomem.
+
+    Testado direto, sem WebSocket: `estado_atual` é função comum. Chave que
+    entra ou sai sem o JS saber quebra uma tela que só se vê no navegador.
+    """
+    from jogo.main import estado_atual
+
+    assert set(estado_atual()) == {
+        "tipo", "estado", "aberta", "ponte_conectada", "jogadores",
+        "quantos_chutaram", "altura_cm", "margem_cm", "categoria",
+        "imagem_b64", "erro", "ranking",
+    }
+
+
+def test_payload_esconde_o_ranking_antes_do_resultado(app):
+    from jogo.main import estado_atual, sala
+
+    id_ana = sala.entrar("Ana").id
+    sala.chutar_por_id(id_ana, 16.0)
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", None)
+
+    # A sala já devolve ranking em REVELANDO, mas o payload é um só para
+    # todos: o vencedor não pode chegar ao celular antes de o palco revelar.
+    assert estado_atual()["estado"] == "REVELANDO"
+    assert estado_atual()["ranking"] == []
+
+    sala.revelacao_terminou(ticket)
+    assert estado_atual()["ranking"][0]["nome"] == "Ana"
+
+
+def test_payload_nunca_traz_o_valor_do_chute(app):
+    from jogo.main import estado_atual, sala
+
+    id_ana = sala.entrar("Ana").id
+    sala.chutar_por_id(id_ana, 15.5)
+    payload = estado_atual()
+    assert payload["jogadores"][0]["chutou"] is True
+    assert payload["quantos_chutaram"] == 1
+    # Todos olham a mesma tela grande: o último a chutar copiaria o vizinho.
+    assert "15.5" not in str(payload)
+
+
+def test_comando_de_host_pelo_socket_de_jogador_nao_faz_nada(client):
+    from jogo.main import sala as sala_do_app
+
+    with client.websocket_connect("/ws/jogador") as ws:
+        id_ana = _entrar(ws, "Ana")
+        ws.send_json({"cmd": "chutar", "id": id_ana, "valor_cm": 10.0})
+        ws.receive_json()
+        for comando in ({"cmd": "medir"}, {"cmd": "nova_rodada"},
+                        {"cmd": "travar", "travada": True}):
+            ws.send_json(comando)
+            assert ws.receive_json()["tipo"] == "erro"
+        assert sala_do_app.estado.value == "AGUARDANDO"
+        assert sala_do_app.aberta is True
+        assert len(sala_do_app.jogadores) == 1
