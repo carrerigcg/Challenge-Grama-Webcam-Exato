@@ -2780,6 +2780,77 @@ def test_medir_sem_ninguem_ter_chutado_devolve_erro(client):
                 assert "chutou" in resposta["mensagem"]
 
 
+def test_resposta_atrasada_depois_de_reset_nao_revela_nada(client):
+    """A corrida da feira, de ponta a ponta.
+
+    O grupo vai embora durante a medição, o apresentador reseta, e só então a
+    câmera responde. A resposta é da rodada que acabou: se entrasse, o palco
+    revelaria uma altura que não é da sala atual — plausível e falso, que é
+    pior que um erro visível.
+
+    A sala prova isso em `test_ticket_velho_nao_afeta_a_medicao_nova`, mas só
+    no nível dela: um teste de mutação mostrou que tirar a checagem de ticket
+    do `concluir_medicao` não quebra nenhum teste da API. Aqui a prova
+    atravessa o WebSocket.
+    """
+    ws_jogador, _ = _jogador_que_chutou(client, "Ana", 16.0)
+    try:
+        with client.websocket_connect(f"/ws/ponte?token={PONTE_TOKEN}") as ponte:
+            with client.websocket_connect(f"/ws/host?token={HOST_TOKEN}") as host:
+                host.receive_json()
+                host.send_json({"cmd": "medir"})
+                assert host.receive_json()["estado"] == "MEDINDO"
+                ordem = ponte.receive_json()
+
+                # O apresentador reseta antes de a câmera responder.
+                host.send_json({"cmd": "nova_rodada"})
+                assert host.receive_json()["estado"] == "AGUARDANDO"
+
+                # A resposta da rodada que já acabou chega agora.
+                ponte.send_json({
+                    "tipo": "resultado", "altura_cm": 17.5, "margem_cm": 0.4,
+                    "categoria": "ALTA", "imagem_b64": None, "id": ordem["id"],
+                })
+
+                # Barreira: um comando que responde. Se a resposta atrasada
+                # tivesse entrado, o próximo frame seria REVELANDO, não a
+                # resposta ao travar.
+                host.send_json({"cmd": "travar", "travada": True})
+                estado = host.receive_json()
+                assert estado["estado"] == "AGUARDANDO"
+                assert estado["aberta"] is False
+                assert estado["altura_cm"] is None
+    finally:
+        ws_jogador.close()
+
+
+def test_erro_da_ponte_sem_id_nao_derruba_a_medicao(client):
+    """Sem o `id` não há como saber de qual medição é o erro.
+
+    O `None` do `entregar_erro` significa falha local (a desconexão do socket),
+    e a ponte não pode herdar esse passe livre por omissão: um erro atrasado da
+    ordem anterior derrubaria a medição em curso. Um teste de mutação mostrou
+    que essa defesa não tinha consumidor nenhum.
+    """
+    ws_jogador, _ = _jogador_que_chutou(client)
+    try:
+        with client.websocket_connect(f"/ws/ponte?token={PONTE_TOKEN}") as ponte:
+            with client.websocket_connect(f"/ws/host?token={HOST_TOKEN}") as host:
+                host.receive_json()
+                host.send_json({"cmd": "medir"})
+                assert host.receive_json()["estado"] == "MEDINDO"
+                ponte.receive_json()
+
+                ponte.send_json({"tipo": "erro", "mensagem": "falha sem id"})
+
+                host.send_json({"cmd": "travar", "travada": True})
+                estado = host.receive_json()
+                assert estado["estado"] == "MEDINDO"
+                assert estado["erro"] is None
+    finally:
+        ws_jogador.close()
+
+
 def test_host_trava_e_destrava_a_sala(client):
     with client.websocket_connect(f"/ws/host?token={HOST_TOKEN}") as host:
         host.receive_json()
