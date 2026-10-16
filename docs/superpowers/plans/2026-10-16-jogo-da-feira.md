@@ -2832,11 +2832,11 @@ async def _medir_e_revelar(ticket: int) -> None:
         altura = resultado["altura_cm"]
     except ErroDeMedicao as e:
         sala.falhar_medicao(ticket, str(e))
-        await transmitir()
+        await difusor.transmitir()
         return
     except Exception as e:
         sala.falhar_medicao(ticket, f"Falha inesperada na medição: {e}")
-        await transmitir()
+        await difusor.transmitir()
         return
 
     try:
@@ -2851,7 +2851,7 @@ async def _medir_e_revelar(ticket: int) -> None:
         # A sala recusa NaN, infinito e negativo: seriam serializados como
         # tokens inválidos de JSON e derrubariam todos os clientes de uma vez.
         sala.falhar_medicao(ticket, f"Medição inválida: {e}")
-        await transmitir()
+        await difusor.transmitir()
         return
 
     # A grama foi medida de verdade, então o dado vai pra API mesmo quando a
@@ -2860,10 +2860,10 @@ async def _medir_e_revelar(ticket: int) -> None:
     if not aceito:
         return  # rodada obsoleta: sem transmitir e sem dormir a animação
 
-    await transmitir()
+    await difusor.transmitir()
     await asyncio.sleep(_duracao_revelacao())
     sala.revelacao_terminou(ticket)
-    await transmitir()
+    await difusor.transmitir()
 
 
 # --- WebSocket do host -------------------------------------------------------
@@ -2876,7 +2876,7 @@ async def ws_host(ws: WebSocket, token: str | None = None):
         await ws.close(code=1008)
         return
     await ws.accept()
-    _clientes.add(ws)
+    difusor.adicionar(ws)
     await ws.send_json(estado_atual())
     try:
         while True:
@@ -2887,7 +2887,7 @@ async def ws_host(ws: WebSocket, token: str | None = None):
                     if not medidor.conectado:
                         raise ErroDeJogo("A ponte da câmera não está conectada.")
                     ticket = sala.iniciar_medicao()
-                    await transmitir()
+                    await difusor.transmitir()
                     # Task separada: o handler precisa voltar a ler o socket
                     # enquanto a medição corre. A referência fica no set porque
                     # o asyncio não segura task solta.
@@ -2904,11 +2904,11 @@ async def ws_host(ws: WebSocket, token: str | None = None):
             except ErroDeJogo as e:
                 await ws.send_json({"tipo": "erro", "mensagem": str(e)})
                 continue
-            await transmitir()
+            await difusor.transmitir()
     except WebSocketDisconnect:
         pass
     finally:
-        _clientes.discard(ws)
+        difusor.remover(ws)
 
 
 # --- WebSocket da ponte ------------------------------------------------------
@@ -2927,7 +2927,7 @@ async def ws_ponte(ws: WebSocket, token: str | None = None):
         await ws.send_json({"tipo": "erro", "mensagem": str(e)})
         await ws.close(code=1008)
         return
-    await transmitir()  # acende o semáforo no palco
+    await difusor.transmitir()  # acende o semáforo no palco
     try:
         while True:
             msg = await ws.receive_json()
@@ -2943,7 +2943,7 @@ async def ws_ponte(ws: WebSocket, token: str | None = None):
         pass
     finally:
         medidor.desconectar(ws)
-        await transmitir()  # apaga o semáforo
+        await difusor.transmitir()  # apaga o semáforo
 ```
 
 - [ ] **Step 4: Rodar e ver falhar no import**
