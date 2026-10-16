@@ -8,7 +8,6 @@ Quem chama a medição é `jogo/main.py`; a sala só recebe o resultado pronto.
 """
 from __future__ import annotations
 
-import math
 import secrets
 from dataclasses import dataclass, field
 from enum import Enum
@@ -18,6 +17,10 @@ CHUTE_MIN_CM = 0.0
 # Teto por motivo prático: alguém digita 99999 de brincadeira e isso explode a
 # escala da animação e o layout do pódio.
 CHUTE_MAX_CM = 200.0
+# O HTML põe maxlength=20 no campo, mas o WebSocket aceita o que mandarem e a
+# URL do jogo é pública. Sem teto aqui, um nome de 10.000 caracteres destrói o
+# layout do palco — o mesmo motivo que justifica CHUTE_MAX_CM.
+MAX_NOME = 20
 
 
 class Estado(str, Enum):
@@ -44,7 +47,9 @@ class Sala:
     estado: Estado = Estado.AGUARDANDO
     aberta: bool = True
     jogadores: list[Jogador] = field(default_factory=list)
-    _proxima_ordem: int = 0
+    # Contador interno: fora do __init__, do repr e do __eq__. `Sala(_proxima_ordem=3)`
+    # não é uma construção que faça sentido para quem usa a sala.
+    _proxima_ordem: int = field(default=0, init=False, repr=False, compare=False)
 
     # --- entrada -------------------------------------------------------------
 
@@ -56,6 +61,8 @@ class Sala:
         nome_limpo = nome.strip()
         if not nome_limpo:
             raise ErroDeJogo("Digite um nome.")
+        if len(nome_limpo) > MAX_NOME:
+            raise ErroDeJogo(f"Nome muito longo (máximo {MAX_NOME} letras).")
         if len(self.jogadores) >= MAX_JOGADORES:
             raise ErroDeJogo("Sala cheia. Espere a próxima rodada.")
         if any(j.nome.casefold() == nome_limpo.casefold() for j in self.jogadores):
