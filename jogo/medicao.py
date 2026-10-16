@@ -65,9 +65,19 @@ class Medidor:
             # processa uma ordem por vez, então a segunda só atrapalharia.
             raise ErroDeMedicao("Já existe uma medição em andamento.")
         laco = asyncio.get_running_loop()
+        # O future nasce ANTES do envio de propósito: `send_json` tem await, e
+        # a resposta da ponte pode ser processada durante ele. Com o future
+        # criado depois, `entregar_resultado` não acharia ninguém esperando,
+        # jogaria o resultado fora, e esta chamada aguardaria até o timeout.
         self._esperando = laco.create_future()
-        await self.canal.send_json({"cmd": "medir"})
         try:
+            try:
+                await self.canal.send_json({"cmd": "medir"})
+            except Exception as e:
+                # Só o envio é embrulhado. Um `except` largo em volta do
+                # `wait_for` também capturaria o ErroDeMedicao que a ponte
+                # entrega pelo future, e re-embrulharia a mensagem do palco.
+                raise ErroDeMedicao(f"Não deu para falar com a ponte: {e}") from None
             return await asyncio.wait_for(self._esperando, timeout=self._timeout_s)
         except asyncio.TimeoutError:
             raise ErroDeMedicao("A câmera demorou demais para responder.") from None

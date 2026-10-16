@@ -134,3 +134,38 @@ async def test_desconectar_canal_antigo_nao_derruba_o_atual():
     medidor.desconectar(antigo)  # chegou atrasado
     assert medidor.conectado is True
     assert medidor.canal is novo
+
+
+async def test_canal_que_quebra_no_envio_nao_trava_o_medidor():
+    """Socket que morre entre o `conectado` e o envio.
+
+    Caso real de feira: o Wi-Fi pisca, o apresentador clica MEDIR, e o socket
+    da ponte já está morto sem o servidor ter processado a desconexão.
+    """
+    class CanalQuebrado:
+        async def send_json(self, dados):
+            raise RuntimeError("socket já fechado")
+
+    medidor = Medidor()
+    quebrado = CanalQuebrado()
+    medidor.conectar(quebrado)
+
+    # A falha sai embrulhada, não como RuntimeError cru: quem chama precisa de
+    # ErroDeMedicao para virar mensagem no palco.
+    with pytest.raises(ErroDeMedicao, match="falar com a ponte"):
+        await medidor.medir()
+
+    # E o medidor aceita a medição seguinte. Sem limpar o `_esperando`, toda
+    # chamada depois desta cairia na guarda de "medição em andamento".
+    medidor.desconectar(quebrado)
+    canal = CanalFalso()
+    medidor.conectar(canal)
+
+    async def responder():
+        while not canal.ordens:
+            await asyncio.sleep(0)
+        medidor.entregar_resultado({"altura_cm": 9.0})
+
+    asyncio.create_task(responder())
+    resultado = await medidor.medir()
+    assert resultado["altura_cm"] == 9.0
