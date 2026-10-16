@@ -228,3 +228,131 @@ def test_chute_recusado_nao_apaga_o_chute_anterior(chute_ruim):
     # Nada é gravado até as validações passarem.
     assert sala.jogador(id_ana).chute_cm == 10.0
     assert sala.jogador(id_ana).ordem_do_chute == ordem_original
+
+
+def test_iniciar_medicao_exige_pelo_menos_um_chute():
+    sala, _ = _sala_com("Ana")
+    with pytest.raises(ErroDeJogo, match="Ninguém chutou"):
+        sala.iniciar_medicao()
+
+
+def test_iniciar_medicao_muda_para_medindo():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    sala.iniciar_medicao()
+    assert sala.estado is Estado.MEDINDO
+
+
+def test_segundo_iniciar_medicao_e_recusado():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    sala.iniciar_medicao()
+    with pytest.raises(ErroDeJogo, match="andamento"):
+        sala.iniciar_medicao()
+
+
+def test_concluir_medicao_vai_para_revelando_e_guarda_o_resultado():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    sala.iniciar_medicao()
+    sala.concluir_medicao(altura_cm=17.5, margem_cm=0.4, categoria="ALTA",
+                          imagem_b64="iVBOR")
+    assert sala.estado is Estado.REVELANDO
+    assert sala.altura_cm == 17.5
+    assert sala.margem_cm == 0.4
+    assert sala.categoria == "ALTA"
+    assert sala.imagem_b64 == "iVBOR"
+    assert sala.erro is None
+
+
+def test_revelacao_terminou_vai_para_resultado():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    sala.iniciar_medicao()
+    sala.concluir_medicao(17.5, 0.4, "ALTA", "iVBOR")
+    sala.revelacao_terminou()
+    assert sala.estado is Estado.RESULTADO
+
+
+def test_falhar_medicao_volta_para_aguardando_preservando_chutes():
+    sala, (id_ana, id_bruno) = _sala_com("Ana", "Bruno")
+    sala.chutar_por_id(id_ana, 10.0)
+    sala.chutar_por_id(id_bruno, 20.0)
+    sala.iniciar_medicao()
+    sala.falhar_medicao("A câmera não respondeu.")
+    assert sala.estado is Estado.AGUARDANDO
+    assert sala.erro == "A câmera não respondeu."
+    # O grupo não digita tudo de novo por causa de um cabo solto.
+    assert sala.jogador(id_ana).chute_cm == 10.0
+    assert sala.jogador(id_bruno).chute_cm == 20.0
+
+
+def test_erro_e_limpo_na_medicao_seguinte():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    sala.iniciar_medicao()
+    sala.falhar_medicao("A câmera não respondeu.")
+    sala.iniciar_medicao()
+    assert sala.erro is None
+
+
+def test_ranking_ordena_por_erro_absoluto():
+    sala, (id_ana, id_bruno, id_caio) = _sala_com("Ana", "Bruno", "Caio")
+    sala.chutar_por_id(id_ana, 16.0)    # erra 1.5
+    sala.chutar_por_id(id_bruno, 25.0)  # erra 7.5
+    sala.chutar_por_id(id_caio, 17.0)   # erra 0.5
+    sala.iniciar_medicao()
+    sala.concluir_medicao(17.5, 0.4, "ALTA", "iVBOR")
+    nomes = [linha["nome"] for linha in sala.ranking()]
+    assert nomes == ["Caio", "Ana", "Bruno"]
+    assert sala.ranking()[0]["posicao"] == 1
+    assert sala.ranking()[0]["erro_cm"] == 0.5
+    assert sala.ranking()[0]["chute_cm"] == 17.0
+
+
+def test_ranking_desempata_por_quem_chutou_primeiro():
+    sala, (id_ana, id_bruno) = _sala_com("Ana", "Bruno")
+    sala.chutar_por_id(id_bruno, 20.0)  # erra 2.5, chutou primeiro
+    sala.chutar_por_id(id_ana, 15.0)    # erra 2.5, chutou depois
+    sala.iniciar_medicao()
+    sala.concluir_medicao(17.5, 0.4, "ALTA", "iVBOR")
+    assert [linha["nome"] for linha in sala.ranking()] == ["Bruno", "Ana"]
+
+
+def test_ranking_desempata_por_ordem_quando_o_erro_arredondado_empata():
+    sala, (id_ana, id_bruno) = _sala_com("Ana", "Bruno")
+    # Medida 12,3: o erro do Bruno é 0.7000000000000011 e o da Ana é
+    # 0.6999999999999993. O palco mostra "0,7 cm" nos dois. Sem arredondar
+    # antes de ordenar, a Ana ganharia por uma diferença invisível, apesar de
+    # o Bruno ter cravado primeiro.
+    sala.chutar_por_id(id_bruno, 11.6)
+    sala.chutar_por_id(id_ana, 13.0)
+    sala.iniciar_medicao()
+    sala.concluir_medicao(12.3, 0.1, "ALTA", "iVBOR")
+    linhas = sala.ranking()
+    assert linhas[0]["erro_cm"] == linhas[1]["erro_cm"] == 0.7
+    assert linhas[0]["nome"] == "Bruno"
+
+
+def test_ranking_ignora_quem_nao_chutou():
+    sala, (id_ana, _id_bruno) = _sala_com("Ana", "Bruno")
+    sala.chutar_por_id(id_ana, 16.0)
+    sala.iniciar_medicao()
+    sala.concluir_medicao(17.5, 0.4, "ALTA", "iVBOR")
+    assert [linha["nome"] for linha in sala.ranking()] == ["Ana"]
+
+
+def test_ranking_com_dois_jogadores_nao_inventa_terceiro_lugar():
+    sala, (id_ana, id_bruno) = _sala_com("Ana", "Bruno")
+    sala.chutar_por_id(id_ana, 16.0)
+    sala.chutar_por_id(id_bruno, 19.0)
+    sala.iniciar_medicao()
+    sala.concluir_medicao(17.5, 0.4, "ALTA", "iVBOR")
+    # Grupo de dois é comum na feira e não pode parecer defeito.
+    assert len(sala.ranking()) == 2
+
+
+def test_ranking_vazio_antes_da_medicao():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 16.0)
+    assert sala.ranking() == []

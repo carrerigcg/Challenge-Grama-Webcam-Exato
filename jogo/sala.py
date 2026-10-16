@@ -48,6 +48,11 @@ class Sala:
     estado: Estado = Estado.AGUARDANDO
     aberta: bool = True
     jogadores: list[Jogador] = field(default_factory=list)
+    altura_cm: float | None = None
+    margem_cm: float | None = None
+    categoria: str | None = None
+    imagem_b64: str | None = None
+    erro: str | None = None
     # Contador interno: fora do __init__, do repr e do __eq__. `Sala(_proxima_ordem=3)`
     # não é uma construção que faça sentido para quem usa a sala.
     _proxima_ordem: int = field(default=0, init=False, repr=False, compare=False)
@@ -108,3 +113,71 @@ class Sala:
 
     def quantos_chutaram(self) -> int:
         return sum(1 for j in self.jogadores if j.chute_cm is not None)
+
+    # --- medição -------------------------------------------------------------
+
+    def iniciar_medicao(self) -> None:
+        if self.estado is not Estado.AGUARDANDO:
+            raise ErroDeJogo("Já tem uma medição em andamento.")
+        if self.quantos_chutaram() == 0:
+            raise ErroDeJogo("Ninguém chutou ainda.")
+        self.erro = None
+        self.estado = Estado.MEDINDO
+
+    def concluir_medicao(
+        self,
+        altura_cm: float,
+        margem_cm: float | None,
+        categoria: str,
+        imagem_b64: str | None,
+    ) -> None:
+        self.altura_cm = float(altura_cm)
+        self.margem_cm = margem_cm
+        self.categoria = categoria
+        self.imagem_b64 = imagem_b64
+        self.erro = None
+        self.estado = Estado.REVELANDO
+
+    def revelacao_terminou(self) -> None:
+        self.estado = Estado.RESULTADO
+
+    def falhar_medicao(self, motivo: str) -> None:
+        """Volta para AGUARDANDO preservando os chutes.
+
+        Preservar é regra, não detalhe: o grupo não vai digitar tudo de novo
+        porque o cabo da câmera estava solto.
+        """
+        self.erro = motivo
+        self.estado = Estado.AGUARDANDO
+
+    # --- ranking -------------------------------------------------------------
+
+    def ranking(self) -> list[dict]:
+        if self.altura_cm is None:
+            return []
+        com_chute = [j for j in self.jogadores if j.chute_cm is not None]
+
+        def erro(j: Jogador) -> float:
+            """Erro já arredondado, usado para ordenar E para mostrar.
+
+            Arredondar antes de ordenar não é cosmético. Medida 12,3 com chutes
+            de 13,0 e 11,6 dá erros 0.6999999999999993 e 0.7000000000000011: o
+            palco mostra "0,7 cm" nos dois, mas uma ordenação pelo valor cru
+            escolhe o vencedor por uma diferença no último bit, e o desempate
+            por ordem de chegada nunca se aplica. A plateia vê um empate e um
+            vencedor decidido por motivo invisível. Uma função só, usada nos
+            dois lugares, garante que o critério é o número que está na tela.
+            """
+            return round(abs(j.chute_cm - self.altura_cm), 1)
+
+        ordenados = sorted(com_chute, key=lambda j: (erro(j), j.ordem_do_chute))
+        return [
+            {
+                "posicao": i + 1,
+                "id": j.id,
+                "nome": j.nome,
+                "chute_cm": j.chute_cm,
+                "erro_cm": erro(j),
+            }
+            for i, j in enumerate(ordenados)
+        ]
