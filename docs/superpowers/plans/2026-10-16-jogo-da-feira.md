@@ -513,10 +513,6 @@ Acrescente ao fim de `tests/test_jogo_sala.py`:
 ```python
 def test_iniciar_medicao_exige_pelo_menos_um_chute():
     sala, _ = _sala_com("Ana")
-    # A frase inteira, não só "chutou": `iniciar_medicao` levanta dois erros
-    # diferentes, e o teste precisa fixar qual dos dois disparou. (O `match`
-    # original dizia "chute", que não é substring de "chutou" — o teste e a
-    # mensagem não podiam passar juntos.)
     with pytest.raises(ErroDeJogo, match="Ninguém chutou"):
         sala.iniciar_medicao()
 
@@ -539,8 +535,8 @@ def test_segundo_iniciar_medicao_e_recusado():
 def test_concluir_medicao_vai_para_revelando_e_guarda_o_resultado():
     sala, (id_ana,) = _sala_com("Ana")
     sala.chutar_por_id(id_ana, 10.0)
-    sala.iniciar_medicao()
-    sala.concluir_medicao(altura_cm=17.5, margem_cm=0.4, categoria="ALTA",
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, altura_cm=17.5, margem_cm=0.4, categoria="ALTA",
                           imagem_b64="iVBOR")
     assert sala.estado is Estado.REVELANDO
     assert sala.altura_cm == 17.5
@@ -553,9 +549,9 @@ def test_concluir_medicao_vai_para_revelando_e_guarda_o_resultado():
 def test_revelacao_terminou_vai_para_resultado():
     sala, (id_ana,) = _sala_com("Ana")
     sala.chutar_por_id(id_ana, 10.0)
-    sala.iniciar_medicao()
-    sala.concluir_medicao(17.5, 0.4, "ALTA", "iVBOR")
-    sala.revelacao_terminou()
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", "iVBOR")
+    sala.revelacao_terminou(ticket)
     assert sala.estado is Estado.RESULTADO
 
 
@@ -563,8 +559,8 @@ def test_falhar_medicao_volta_para_aguardando_preservando_chutes():
     sala, (id_ana, id_bruno) = _sala_com("Ana", "Bruno")
     sala.chutar_por_id(id_ana, 10.0)
     sala.chutar_por_id(id_bruno, 20.0)
-    sala.iniciar_medicao()
-    sala.falhar_medicao("A câmera não respondeu.")
+    ticket = sala.iniciar_medicao()
+    sala.falhar_medicao(ticket, "A câmera não respondeu.")
     assert sala.estado is Estado.AGUARDANDO
     assert sala.erro == "A câmera não respondeu."
     # O grupo não digita tudo de novo por causa de um cabo solto.
@@ -575,8 +571,8 @@ def test_falhar_medicao_volta_para_aguardando_preservando_chutes():
 def test_erro_e_limpo_na_medicao_seguinte():
     sala, (id_ana,) = _sala_com("Ana")
     sala.chutar_por_id(id_ana, 10.0)
-    sala.iniciar_medicao()
-    sala.falhar_medicao("A câmera não respondeu.")
+    ticket = sala.iniciar_medicao()
+    sala.falhar_medicao(ticket, "A câmera não respondeu.")
     sala.iniciar_medicao()
     assert sala.erro is None
 
@@ -586,8 +582,8 @@ def test_ranking_ordena_por_erro_absoluto():
     sala.chutar_por_id(id_ana, 16.0)    # erra 1.5
     sala.chutar_por_id(id_bruno, 25.0)  # erra 7.5
     sala.chutar_por_id(id_caio, 17.0)   # erra 0.5
-    sala.iniciar_medicao()
-    sala.concluir_medicao(17.5, 0.4, "ALTA", "iVBOR")
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", "iVBOR")
     nomes = [linha["nome"] for linha in sala.ranking()]
     assert nomes == ["Caio", "Ana", "Bruno"]
     assert sala.ranking()[0]["posicao"] == 1
@@ -599,8 +595,8 @@ def test_ranking_desempata_por_quem_chutou_primeiro():
     sala, (id_ana, id_bruno) = _sala_com("Ana", "Bruno")
     sala.chutar_por_id(id_bruno, 20.0)  # erra 2.5, chutou primeiro
     sala.chutar_por_id(id_ana, 15.0)    # erra 2.5, chutou depois
-    sala.iniciar_medicao()
-    sala.concluir_medicao(17.5, 0.4, "ALTA", "iVBOR")
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", "iVBOR")
     assert [linha["nome"] for linha in sala.ranking()] == ["Bruno", "Ana"]
 
 
@@ -612,8 +608,8 @@ def test_ranking_desempata_por_ordem_quando_o_erro_arredondado_empata():
     # o Bruno ter cravado primeiro.
     sala.chutar_por_id(id_bruno, 11.6)
     sala.chutar_por_id(id_ana, 13.0)
-    sala.iniciar_medicao()
-    sala.concluir_medicao(12.3, 0.1, "ALTA", "iVBOR")
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 12.3, 0.1, "ALTA", "iVBOR")
     linhas = sala.ranking()
     assert linhas[0]["erro_cm"] == linhas[1]["erro_cm"] == 0.7
     assert linhas[0]["nome"] == "Bruno"
@@ -622,8 +618,8 @@ def test_ranking_desempata_por_ordem_quando_o_erro_arredondado_empata():
 def test_ranking_ignora_quem_nao_chutou():
     sala, (id_ana, _id_bruno) = _sala_com("Ana", "Bruno")
     sala.chutar_por_id(id_ana, 16.0)
-    sala.iniciar_medicao()
-    sala.concluir_medicao(17.5, 0.4, "ALTA", "iVBOR")
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", "iVBOR")
     assert [linha["nome"] for linha in sala.ranking()] == ["Ana"]
 
 
@@ -631,8 +627,8 @@ def test_ranking_com_dois_jogadores_nao_inventa_terceiro_lugar():
     sala, (id_ana, id_bruno) = _sala_com("Ana", "Bruno")
     sala.chutar_por_id(id_ana, 16.0)
     sala.chutar_por_id(id_bruno, 19.0)
-    sala.iniciar_medicao()
-    sala.concluir_medicao(17.5, 0.4, "ALTA", "iVBOR")
+    ticket = sala.iniciar_medicao()
+    sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", "iVBOR")
     # Grupo de dois é comum na feira e não pode parecer defeito.
     assert len(sala.ranking()) == 2
 
@@ -641,6 +637,122 @@ def test_ranking_vazio_antes_da_medicao():
     sala, (id_ana,) = _sala_com("Ana")
     sala.chutar_por_id(id_ana, 16.0)
     assert sala.ranking() == []
+
+
+def test_ticket_velho_nao_afeta_a_medicao_nova():
+    """O coração da correção: resposta atrasada não entra na rodada seguinte."""
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    t1 = sala.iniciar_medicao()
+    sala.falhar_medicao(t1, "A câmera não respondeu.")
+    t2 = sala.iniciar_medicao()
+    assert t1 != t2
+    # A resposta da medição 1 chega agora, atrasada.
+    assert sala.concluir_medicao(t1, 17.5, 0.4, "ALTA", "iVBOR") is False
+    assert sala.estado is Estado.MEDINDO
+    assert sala.altura_cm is None
+    # A medição 2 conclui normalmente.
+    assert sala.concluir_medicao(t2, 9.0, 0.2, "MÉDIA", None) is True
+    assert sala.altura_cm == 9.0
+
+
+def test_falhar_medicao_obsoleta_nao_derruba_a_medicao_nova():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    t1 = sala.iniciar_medicao()
+    sala.falhar_medicao(t1, "primeira falhou")
+    t2 = sala.iniciar_medicao()
+    # A falha atrasada da medição 1 não pode derrubar a 2 por baixo — era o
+    # buraco que a guarda de estado sozinha deixava.
+    assert sala.falhar_medicao(t1, "falha atrasada") is False
+    assert sala.estado is Estado.MEDINDO
+    assert sala.erro is None
+    assert t2 == sala._medicao
+
+
+def test_concluir_medicao_duas_vezes_descarta_a_segunda():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    t = sala.iniciar_medicao()
+    assert sala.concluir_medicao(t, 17.5, 0.4, "ALTA", "iVBOR") is True
+    assert sala.concluir_medicao(t, 99.0, 0.4, "ALTA", None) is False
+    assert sala.altura_cm == 17.5
+
+
+def test_revelacao_terminou_duas_vezes_descarta_a_segunda():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    t = sala.iniciar_medicao()
+    sala.concluir_medicao(t, 17.5, 0.4, "ALTA", None)
+    assert sala.revelacao_terminou(t) is True
+    assert sala.revelacao_terminou(t) is False
+    assert sala.estado is Estado.RESULTADO
+
+
+@pytest.mark.parametrize("ruim", [float("nan"), float("inf"), float("-inf"), -1.0])
+def test_concluir_medicao_recusa_altura_invalida(ruim):
+    """NaN e infinito quebrariam o JSON de TODOS os clientes de uma vez."""
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    t = sala.iniciar_medicao()
+    with pytest.raises(ValueError):
+        sala.concluir_medicao(t, ruim, 0.4, "ALTA", None)
+    # Nada gravado pela metade: a validação roda antes de qualquer mutação.
+    assert sala.estado is Estado.MEDINDO
+    assert sala.altura_cm is None
+
+
+@pytest.mark.parametrize("ruim", [float("nan"), float("inf")])
+def test_concluir_medicao_recusa_margem_invalida(ruim):
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    t = sala.iniciar_medicao()
+    with pytest.raises(ValueError):
+        sala.concluir_medicao(t, 17.5, ruim, "ALTA", None)
+    assert sala.estado is Estado.MEDINDO
+
+
+def test_iniciar_medicao_apaga_o_resultado_da_rodada_anterior():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    t1 = sala.iniciar_medicao()
+    sala.concluir_medicao(t1, 17.5, 0.4, "ALTA", "iVBOR")
+    # Na Task 4 isto acontece por `nova_rodada`; forçar o estado testa só a
+    # limpeza, sem depender do método que ainda não existe.
+    sala.estado = Estado.AGUARDANDO
+    sala.iniciar_medicao()
+    assert sala.altura_cm is None
+    assert sala.margem_cm is None
+    assert sala.categoria is None
+    assert sala.imagem_b64 is None
+
+
+def test_ranking_vazio_depois_de_falha_na_medicao():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    t = sala.iniciar_medicao()
+    sala.falhar_medicao(t, "A câmera não respondeu.")
+    assert sala.ranking() == []
+
+
+def test_ranking_com_chute_exato_tem_erro_zero():
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 17.5)
+    t = sala.iniciar_medicao()
+    sala.concluir_medicao(t, 17.5, 0.4, "ALTA", None)
+    assert sala.ranking()[0]["erro_cm"] == 0.0
+
+
+def test_ranking_desempata_por_ordem_reatribuida_na_edicao():
+    sala, (id_ana, id_bruno) = _sala_com("Ana", "Bruno")
+    sala.chutar_por_id(id_ana, 15.0)    # erra 2.5, cravou primeiro
+    sala.chutar_por_id(id_bruno, 20.0)  # erra 2.5, cravou depois
+    sala.chutar_por_id(id_ana, 15.0)    # reedita o MESMO número
+    t = sala.iniciar_medicao()
+    sala.concluir_medicao(t, 17.5, 0.4, "ALTA", None)
+    # Mexer no chute custa a vantagem do desempate mesmo sem mudar o número.
+    # É a interação entre a regra de edição (Task 2) e o ranking (Task 3).
+    assert [linha["nome"] for linha in sala.ranking()] == ["Bruno", "Ana"]
 ```
 
 - [ ] **Step 2: Rodar e confirmar que falha**
@@ -661,88 +773,174 @@ Em `jogo/sala.py`, acrescente os cinco campos ao dataclass `Sala`, logo antes de
     erro: str | None = None
 ```
 
+Acrescente também, **no nível do módulo** e logo antes da classe `Estado`:
+
+```python
+def _exigir_numero_finito(valor: float, campo: str) -> None:
+    """Recusa NaN, infinito, negativo e não-número.
+
+    Não é paranoia: o `send_json` do Starlette usa `json.dumps` com
+    `allow_nan` no padrão, então NaN sai no WebSocket como o token `NaN` e
+    infinito como `Infinity` — nenhum dos dois é JSON válido. O `JSON.parse`
+    lança no navegador e, como o broadcast manda um payload só para todos, um
+    valor assim derruba o palco e os cinco celulares ao mesmo tempo.
+    Verificado em starlette 0.47.3.
+
+    `ValueError` e não `ErroDeJogo`: isto é invariante do sistema, não recado
+    para o visitante. Quem chama converte na borda.
+    """
+    if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+        raise ValueError(f"{campo} tem que ser número, veio {type(valor).__name__}")
+    if not math.isfinite(valor):
+        raise ValueError(f"{campo} tem que ser finito, veio {valor!r}")
+    if valor < 0:
+        raise ValueError(f"{campo} não pode ser negativo, veio {valor!r}")
+```
+
+E mais um campo ao dataclass `Sala`, antes de `_proxima_ordem`:
+
+```python
+    # Identifica a medição em curso. Serve para descartar resposta atrasada de
+    # uma rodada que já acabou. A `nova_rodada` da Task 4 também o incrementa,
+    # invalidando tudo que estiver em voo.
+    _medicao: int = field(default=0, init=False, repr=False, compare=False)
+```
+
 E estes métodos dentro de `Sala`, abaixo de `quantos_chutaram`:
 
 ```python
     # --- medição -------------------------------------------------------------
 
-    def iniciar_medicao(self) -> None:
+    def iniciar_medicao(self) -> int:
+        """Começa uma medição e devolve o ticket que a identifica.
+
+        O ticket existe porque a medição roda numa task de background que leva
+        segundos, e o apresentador pode resetar a sala no meio. Sem ele, a
+        resposta atrasada de uma rodada que já acabou entra na sala nova — com
+        jogadores novos chutando contra a altura velha, o ranking fica
+        plausível e falso, que é pior que um erro visível na tela.
+        """
         if self.estado is not Estado.AGUARDANDO:
             raise ErroDeJogo("Já tem uma medição em andamento.")
         if self.quantos_chutaram() == 0:
             raise ErroDeJogo("Ninguém chutou ainda.")
+        self._limpar_resultado()
         self.erro = None
+        self._medicao += 1
         self.estado = Estado.MEDINDO
+        return self._medicao
 
     def concluir_medicao(
         self,
+        ticket: int,
         altura_cm: float,
         margem_cm: float | None,
         categoria: str,
         imagem_b64: str | None,
-    ) -> None:
+    ) -> bool:
+        """Guarda o resultado e vai para REVELANDO. `False` se obsoleto.
+
+        Devolve `bool` em vez de levantar `ErroDeJogo`: quem chama é uma task
+        de background, não um visitante. Exceção ali vira "Task exception was
+        never retrieved" no log, sem ninguém para ler a mensagem.
+        """
+        if ticket != self._medicao or self.estado is not Estado.MEDINDO:
+            return False
+        _exigir_numero_finito(altura_cm, "altura_cm")
+        if margem_cm is not None:
+            _exigir_numero_finito(margem_cm, "margem_cm")
         self.altura_cm = float(altura_cm)
         self.margem_cm = margem_cm
         self.categoria = categoria
         self.imagem_b64 = imagem_b64
-        self.erro = None
         self.estado = Estado.REVELANDO
+        return True
 
-    def revelacao_terminou(self) -> None:
+    def revelacao_terminou(self, ticket: int) -> bool:
+        """Fecha a revelação. `False` se obsoleto."""
+        if ticket != self._medicao or self.estado is not Estado.REVELANDO:
+            return False
         self.estado = Estado.RESULTADO
+        return True
 
-    def falhar_medicao(self, motivo: str) -> None:
-        """Volta para AGUARDANDO preservando os chutes.
+    def falhar_medicao(self, ticket: int, motivo: str) -> bool:
+        """Volta para AGUARDANDO preservando os chutes. `False` se obsoleto.
 
         Preservar é regra, não detalhe: o grupo não vai digitar tudo de novo
         porque o cabo da câmera estava solto.
         """
+        if ticket != self._medicao or self.estado is not Estado.MEDINDO:
+            return False
         self.erro = motivo
         self.estado = Estado.AGUARDANDO
+        return True
+
+    def _limpar_resultado(self) -> None:
+        """Apaga o resultado da rodada anterior.
+
+        Sem isso, a sala carrega altura e imagem velhas para a rodada nova, e o
+        payload de broadcast as manda para o palco fora de hora.
+        """
+        self.altura_cm = None
+        self.margem_cm = None
+        self.categoria = None
+        self.imagem_b64 = None
 
     # --- ranking -------------------------------------------------------------
 
     def ranking(self) -> list[dict]:
+        """Classificação da rodada, da menor para a maior distância da medida.
+
+        Quem entrou e não chutou fica de fora. Empate resolve por quem mandou
+        o chute primeiro (`ordem_do_chute`).
+
+        O erro é arredondado ANTES de ordenar, e o mesmo valor arredondado vai
+        para a tela. Isso não é cosmético: medida 12,3 com chutes de 13,0 e
+        11,6 dá erros 0.6999999999999993 e 0.7000000000000011; o palco mostra
+        "0,7 cm" nos dois, e ordenar pelo valor cru escolheria o vencedor por
+        uma diferença no último bit. A plateia veria um empate e um vencedor
+        decidido por motivo invisível, e o desempate por ordem de chegada nunca
+        se aplicaria.
+
+        Vazio fora de REVELANDO e RESULTADO: classificação só existe depois de
+        uma medição válida, e amarrar isso ao estado é mais firme do que
+        depender de `altura_cm` estar limpa.
+        """
+        if self.estado not in (Estado.REVELANDO, Estado.RESULTADO):
+            return []
         if self.altura_cm is None:
             return []
         com_chute = [j for j in self.jogadores if j.chute_cm is not None]
-
-        def erro(j: Jogador) -> float:
-            """Erro já arredondado, usado para ordenar E para mostrar.
-
-            Arredondar antes de ordenar não é cosmético. Medida 12,3 com chutes
-            de 13,0 e 11,6 dá erros 0.6999999999999993 e 0.7000000000000011: o
-            palco mostra "0,7 cm" nos dois, mas uma ordenação pelo valor cru
-            escolhe o vencedor por uma diferença no último bit, e o desempate
-            por ordem de chegada nunca se aplica. A plateia vê um empate e um
-            vencedor decidido por motivo invisível. Uma função só, usada nos
-            dois lugares, garante que o critério é o número que está na tela.
-            """
-            return round(abs(j.chute_cm - self.altura_cm), 1)
-
-        ordenados = sorted(com_chute, key=lambda j: (erro(j), j.ordem_do_chute))
+        ordenados = sorted(
+            com_chute,
+            key=lambda j: (self._erro_arredondado(j), j.ordem_do_chute),
+        )
         return [
             {
                 "posicao": i + 1,
                 "id": j.id,
                 "nome": j.nome,
                 "chute_cm": j.chute_cm,
-                "erro_cm": erro(j),
+                "erro_cm": self._erro_arredondado(j),
             }
             for i, j in enumerate(ordenados)
         ]
+
+    def _erro_arredondado(self, jogador: Jogador) -> float:
+        """Distância entre chute e medida, já arredondada. Veja `ranking`."""
+        return round(abs(jogador.chute_cm - self.altura_cm), 1)
 ```
 
 - [ ] **Step 4: Rodar os testes**
 
 Run: `python -m pytest tests/test_jogo_sala.py -v`
-Expected: PASS em todos (42 testes).
+Expected: PASS em todos (**56 testes**).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add jogo/sala.py tests/test_jogo_sala.py
-git commit -m "feat(jogo): medicao, ranking por erro absoluto e falha que preserva chutes"
+git commit -m "feat(jogo): medicao com ticket, ranking por erro arredondado e falha que preserva chutes"
 ```
 
 ---
@@ -794,6 +992,24 @@ def test_nova_rodada_permite_entrar_de_novo_com_o_mesmo_nome():
     sala, _ = _sala_com("Ana")
     sala.nova_rodada()
     assert sala.entrar("Ana").nome == "Ana"
+
+
+def test_nova_rodada_descarta_a_medicao_em_voo():
+    """A corrida real da feira: grupo vai embora durante a medição."""
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    ticket = sala.iniciar_medicao()
+
+    sala.nova_rodada()
+    id_bruno = sala.entrar("Bruno").id
+    sala.chutar_por_id(id_bruno, 50.0)
+
+    # A câmera responde agora, com a medida do grupo que já foi embora.
+    assert sala.concluir_medicao(ticket, 17.5, 0.4, "ALTA", None) is False
+    assert sala.estado is Estado.AGUARDANDO
+    assert sala.altura_cm is None
+    # O Bruno não pode ser coroado contra uma medida que não é dele.
+    assert sala.ranking() == []
 ```
 
 - [ ] **Step 2: Rodar e confirmar que falha**
@@ -809,12 +1025,14 @@ Em `jogo/sala.py`, acrescente dentro de `Sala`, abaixo de `falhar_medicao`:
     def nova_rodada(self) -> None:
         """Zera a sala. Vale de qualquer estado: é a válvula de escape do host."""
         self.jogadores = []
-        self.altura_cm = None
-        self.margem_cm = None
-        self.categoria = None
-        self.imagem_b64 = None
+        self._limpar_resultado()
         self.erro = None
         self._proxima_ordem = 0
+        # Invalida a medição em voo. Sem isto, a resposta da câmera de uma
+        # rodada que o apresentador acabou de resetar entraria na sala nova —
+        # com jogadores novos chutando contra a altura velha, o ranking fica
+        # plausível e falso.
+        self._medicao += 1
         self.aberta = True
         self.estado = Estado.AGUARDANDO
 ```
@@ -822,7 +1040,7 @@ Em `jogo/sala.py`, acrescente dentro de `Sala`, abaixo de `falhar_medicao`:
 - [ ] **Step 4: Rodar os testes**
 
 Run: `python -m pytest tests/test_jogo_sala.py -v`
-Expected: PASS em todos (48 testes).
+Expected: PASS em todos (63 testes).
 
 - [ ] **Step 5: Commit**
 
@@ -968,6 +1186,25 @@ async def test_segunda_ponte_e_recusada():
     assert medidor.canal is primeira
 
 
+async def test_medir_recusa_medicao_concorrente():
+    medidor = Medidor()
+    canal = CanalFalso()
+    medidor.conectar(canal)
+
+    async def segunda_chamada():
+        while not canal.ordens:  # espera a primeira ordem sair
+            await asyncio.sleep(0)
+        with pytest.raises(ErroDeMedicao, match="em andamento"):
+            await medidor.medir()
+        medidor.entregar_resultado({"altura_cm": 17.5})
+
+    asyncio.create_task(segunda_chamada())
+    resultado = await medidor.medir()
+    assert resultado["altura_cm"] == 17.5
+    # Uma ordem só saiu: a segunda nem chegou ao canal.
+    assert canal.ordens == [{"cmd": "medir"}]
+
+
 async def test_desconectar_canal_antigo_nao_derruba_o_atual():
     medidor = Medidor()
     antigo = CanalFalso()
@@ -1051,6 +1288,11 @@ class Medidor:
     async def medir(self) -> dict:
         if self.canal is None:
             raise ErroDeMedicao("A ponte da câmera não está conectada.")
+        if self._esperando is not None and not self._esperando.done():
+            # Sem isto, a segunda chamada sobrescreve o future da primeira, que
+            # fica órfã esperando até estourar o timeout de 30s. A ponte também
+            # processa uma ordem por vez, então a segunda só atrapalharia.
+            raise ErroDeMedicao("Já existe uma medição em andamento.")
         laco = asyncio.get_running_loop()
         self._esperando = laco.create_future()
         await self.canal.send_json({"cmd": "medir"})
@@ -1076,7 +1318,7 @@ class Medidor:
 - [ ] **Step 5: Rodar os testes**
 
 Run: `python -m pytest tests/test_jogo_medicao.py -v`
-Expected: PASS nos 7 testes.
+Expected: PASS nos 8 testes.
 
 - [ ] **Step 6: Commit**
 
@@ -1794,23 +2036,58 @@ def _duracao_revelacao() -> float:
     return float(os.environ.get("DURACAO_REVELACAO_S", DURACAO_REVELACAO_S_PADRAO))
 
 
-async def _medir_e_revelar() -> None:
+# O asyncio só guarda referência fraca para tasks soltas, e uma task coletada
+# no meio da medição morre em silêncio, deixando a sala presa em MEDINDO.
+_tarefas_em_voo: set[asyncio.Task] = set()
+
+
+async def _medir_e_revelar(ticket: int) -> None:
+    """Pede a medição, revela e fecha. Cada passo é descartável por `ticket`.
+
+    O ticket vem do `iniciar_medicao` e identifica a rodada. Se o apresentador
+    resetar a sala no meio, a sala recusa tudo que chegar com ticket velho e
+    esta task some sem efeito — é o que impede a resposta de uma rodada que já
+    acabou de coroar um vencedor contra uma medida que não é dele.
+    """
     try:
         resultado = await medidor.medir()
+        # Dentro do try de propósito: um payload sem `altura_cm` levantaria
+        # KeyError aqui, e fora do try isso deixaria a sala presa em MEDINDO
+        # para sempre, com só o "nova rodada" como escape.
+        altura = resultado["altura_cm"]
     except ErroDeMedicao as e:
-        sala.falhar_medicao(str(e))
+        sala.falhar_medicao(ticket, str(e))
         await transmitir()
         return
-    sala.concluir_medicao(
-        altura_cm=resultado["altura_cm"],
-        margem_cm=resultado.get("margem_cm"),
-        categoria=resultado.get("categoria", ""),
-        imagem_b64=resultado.get("imagem_b64"),
-    )
-    await transmitir()
+    except Exception as e:
+        sala.falhar_medicao(ticket, f"Falha inesperada na medição: {e}")
+        await transmitir()
+        return
+
+    try:
+        aceito = sala.concluir_medicao(
+            ticket,
+            altura_cm=altura,
+            margem_cm=resultado.get("margem_cm"),
+            categoria=resultado.get("categoria", ""),
+            imagem_b64=resultado.get("imagem_b64"),
+        )
+    except ValueError as e:
+        # A sala recusa NaN, infinito e negativo: seriam serializados como
+        # tokens inválidos de JSON e derrubariam todos os clientes de uma vez.
+        sala.falhar_medicao(ticket, f"Medição inválida: {e}")
+        await transmitir()
+        return
+
+    # A grama foi medida de verdade, então o dado vai pra API mesmo quando a
+    # rodada já acabou — a API guarda leitura bruta, não resultado de jogo.
     enviar_em_background(resultado)
+    if not aceito:
+        return  # rodada obsoleta: sem transmitir e sem dormir a animação
+
+    await transmitir()
     await asyncio.sleep(_duracao_revelacao())
-    sala.revelacao_terminou()
+    sala.revelacao_terminou(ticket)
     await transmitir()
 
 
@@ -1834,11 +2111,14 @@ async def ws_host(ws: WebSocket, token: str | None = None):
                 if cmd == "medir":
                     if not medidor.conectado:
                         raise ErroDeJogo("A ponte da câmera não está conectada.")
-                    sala.iniciar_medicao()
+                    ticket = sala.iniciar_medicao()
                     await transmitir()
                     # Task separada: o handler precisa voltar a ler o socket
-                    # enquanto a medição corre.
-                    asyncio.create_task(_medir_e_revelar())
+                    # enquanto a medição corre. A referência fica no set porque
+                    # o asyncio não segura task solta.
+                    tarefa = asyncio.create_task(_medir_e_revelar(ticket))
+                    _tarefas_em_voo.add(tarefa)
+                    tarefa.add_done_callback(_tarefas_em_voo.discard)
                     continue
                 if cmd == "nova_rodada":
                     sala.nova_rodada()
@@ -2070,7 +2350,7 @@ def enviar_em_background(resultado: dict) -> None:
 - [ ] **Step 4: Rodar a suíte do jogo inteira**
 
 Run: `python -m pytest tests/test_jogo_sala.py tests/test_jogo_medicao.py tests/test_jogo_envio.py tests/test_jogo_api.py -v`
-Expected: PASS em tudo — 48 da sala, 7 da medição, 8 do envio, 28 da API.
+Expected: PASS em tudo — 63 da sala, 8 da medição, 8 do envio, 28 da API.
 
 - [ ] **Step 5: Commit**
 
@@ -2290,6 +2570,11 @@ Crie `jogo/static/controle.js`:
   }
 
   function cm(valor) {
+    // Última linha de defesa: se um reset esvaziar a sala entre o broadcast e
+    // o render, `toFixed` em null derrubaria a tela na frente do grupo. A sala
+    // já impede isso, mas uma tela quebrada numa apresentação não tem segunda
+    // chance, e o custo aqui é uma linha.
+    if (typeof valor !== "number" || !isFinite(valor)) { return "—"; }
     return valor.toFixed(1).replace(".", ",") + " cm";
   }
 
@@ -2673,6 +2958,11 @@ Crie `jogo/static/palco.js`:
   }
 
   function cm(valor) {
+    // Última linha de defesa: se um reset esvaziar a sala entre o broadcast e
+    // o render, `toFixed` em null derrubaria a tela na frente do grupo. A sala
+    // já impede isso, mas uma tela quebrada numa apresentação não tem segunda
+    // chance, e o custo aqui é uma linha.
+    if (typeof valor !== "number" || !isFinite(valor)) { return "—"; }
     return valor.toFixed(1).replace(".", ",") + " cm";
   }
 
