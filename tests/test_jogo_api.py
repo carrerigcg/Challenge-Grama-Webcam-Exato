@@ -344,6 +344,38 @@ def test_clientes_saem_do_difusor_ao_desconectar(client):
     assert difusor.quantos == 0
 
 
+def test_payload_nunca_traz_o_valor_do_chute(app):
+    """Prova estrutural, não textual.
+
+    `"13.37" not in str(payload)` passaria com o valor saindo arredondado, ou
+    como string com vírgula. O que garante é cada jogador ter exatamente as
+    chaves do contrato — nada a mais.
+    """
+    from jogo.main import estado_atual, sala
+
+    jogador = sala.entrar("Ana")
+    sala.chutar_por_id(jogador.id, 13.37)
+    payload = estado_atual()
+
+    for linha in payload["jogadores"]:
+        assert set(linha) == {"nome", "chutou"}
+    assert payload["quantos_chutaram"] == 1
+
+    # Cinto, além da prova estrutural: nenhum escalar do payload parece o chute.
+    def escalares(valor):
+        if isinstance(valor, dict):
+            for v in valor.values():
+                yield from escalares(v)
+        elif isinstance(valor, list):
+            for v in valor:
+                yield from escalares(v)
+        else:
+            yield valor
+
+    assert 13.37 not in list(escalares(payload))
+    assert "13.37" not in str(payload) and "13,37" not in str(payload)
+
+
 def test_texto_torto_no_palco_nao_derruba_o_socket(client):
     """O palco não manda comando, mas a URL é pública: lixo não pode derrubá-lo."""
     from jogo.main import difusor
@@ -356,27 +388,3 @@ def test_texto_torto_no_palco_nao_derruba_o_socket(client):
             jogador.receive_json()
             assert palco.receive_json()["jogadores"][0]["nome"] == "Ana"
             assert difusor.quantos == 2
-
-
-def test_chute_nao_vaza_o_valor_no_estado(client):
-    with client.websocket_connect("/ws/jogador") as ws:
-        id_ana = _entrar(ws, "Ana")
-        ws.send_json({"cmd": "chutar", "id": id_ana, "valor_cm": 15.5})
-        estado = ws.receive_json()
-        assert estado["jogadores"][0]["chutou"] is True
-        assert estado["quantos_chutaram"] == 1
-        # O valor não pode estar em lugar nenhum do payload: todos olham a mesma
-        # tela grande e o último a chutar copiaria.
-        assert "15.5" not in str(estado)
-
-
-def test_payload_nunca_traz_o_valor_do_chute(app):
-    from jogo.main import estado_atual, sala
-
-    id_ana = sala.entrar("Ana").id
-    sala.chutar_por_id(id_ana, 15.5)
-    payload = estado_atual()
-    assert payload["jogadores"][0]["chutou"] is True
-    assert payload["quantos_chutaram"] == 1
-    # Todos olham a mesma tela grande: o último a chutar copiaria o vizinho.
-    assert "15.5" not in str(payload)
