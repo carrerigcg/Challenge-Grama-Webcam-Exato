@@ -5,6 +5,21 @@ deve passar a importar. É o que permite testar ranking, empates e sala cheia
 sem webcam, sem rede e sem navegador.
 
 Quem chama a medição é `jogo/main.py`; a sala só recebe o resultado pronto.
+
+Contrato para quem consome esta classe:
+
+- **Uma instância só, pela vida do processo.** Nunca reatribua `Sala()`: o
+  ticket de medição recomeça em 0 e volta a colidir com o de uma task que
+  ainda esteja em voo. Para zerar a sala, use `nova_rodada()`.
+- **Converta o JSON na borda.** `entrar` espera `str` e `chutar_por_id` espera
+  número; é o handler que faz `str(...)`, `float(...)` e captura
+  `TypeError`/`ValueError`. A sala valida regra de jogo, não tipo de payload.
+- **Capture `ValueError` de `concluir_medicao`.** Altura NaN, infinita ou
+  negativa é recusada como invariante, e a sala fica em MEDINDO. Sem o
+  `except` virando `falhar_medicao`, a rodada trava até o host resetar.
+- **Passe o ticket adiante.** `iniciar_medicao` devolve o ticket que
+  `concluir_medicao`, `revelacao_terminou` e `falhar_medicao` exigem. Elas
+  devolvem `False` para chamada obsoleta, e isso é esperado, não erro.
 """
 from __future__ import annotations
 

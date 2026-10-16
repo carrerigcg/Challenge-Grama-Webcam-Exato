@@ -501,9 +501,16 @@ def test_nova_rodada_limpa_tudo_e_reabre():
 def test_nova_rodada_funciona_de_qualquer_estado(estado_antes):
     sala, (id_ana,) = _sala_com("Ana")
     sala.chutar_por_id(id_ana, 10.0)
+    # Popula o resultado antes de resetar: checar só o estado não provaria que
+    # a altura e a imagem da rodada anterior somem de MEDINDO e REVELANDO.
+    sala.altura_cm, sala.margem_cm = 17.5, 0.4
+    sala.categoria, sala.imagem_b64 = "ALTA", "iVBOR"
     sala.estado = estado_antes  # força o estado: é a válvula de escape do host
     sala.nova_rodada()
     assert sala.estado is Estado.AGUARDANDO
+    assert sala.jogadores == []
+    assert sala.altura_cm is None
+    assert sala.imagem_b64 is None
 
 
 def test_nova_rodada_permite_entrar_de_novo_com_o_mesmo_nome():
@@ -528,3 +535,22 @@ def test_nova_rodada_descarta_a_medicao_em_voo():
     assert sala.altura_cm is None
     # O Bruno não pode ser coroado contra uma medida que não é dele.
     assert sala.ranking() == []
+
+
+def test_ticket_de_medicao_so_cresce():
+    """Invariante que ninguém vai reconferir depois desta task.
+
+    Se alguém "simplificar" o `_medicao += 1` da `nova_rodada` para `= 0`, por
+    simetria com o `_proxima_ordem = 0` da linha de cima, o ticket 1 de uma
+    medição velha volta a colidir com o ticket 1 da seguinte — e a corrida que
+    o ticket existe para fechar reabre, em silêncio.
+    """
+    sala, (id_ana,) = _sala_com("Ana")
+    sala.chutar_por_id(id_ana, 10.0)
+    vistos = [sala.iniciar_medicao()]
+    for _ in range(3):
+        sala.nova_rodada()
+        id_novo = sala.entrar("Ana").id
+        sala.chutar_por_id(id_novo, 10.0)
+        vistos.append(sala.iniciar_medicao())
+    assert vistos == sorted(set(vistos)), f"tickets repetiram ou recuaram: {vistos}"
