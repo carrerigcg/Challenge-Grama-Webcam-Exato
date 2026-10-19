@@ -22,3 +22,32 @@ services:
         sync: false
       - key: API_KEY_READ
         sync: false
+
+  # Jogo da feira de ciências. Serviço separado de propósito: o jogo importa
+  # código que a API não tem, e um deploy dele não pode derrubar a produção.
+  # NÃO instala requirements-station.txt: quem fala com a câmera é a ponte, que
+  # roda no notebook da feira.
+  - type: web
+    name: jogo-grama-webcam
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements-jogo.txt
+    startCommand: uvicorn jogo.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /saude
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: HOST_TOKEN
+        sync: false
+      - key: PONTE_TOKEN
+        sync: false
+      # URL pública do próprio serviço, usada no QR code.
+      - key: JOGO_URL_PUBLICA
+        sync: false
+      # A medição da feira é postada na API de produção como
+      # regiao="Feira de Ciências".
+      - key: API_URL
+        sync: false
+      - key: API_KEY_WRITE
+        sync: false

@@ -411,6 +411,12 @@ Aliases legados de `/leituras` continuam respondendo (ocultos do Swagger). Serã
 │   ├── main.py               # rotas, autenticação, middleware de tamanho
 │   └── db.py                 # pool psycopg, DDL, migração rename `medicoes`→`leituras`
 │
+├── jogo/                      # jogo da feira de ciências (serviço separado)
+│   ├── sala.py               # máquina de estado, zero I/O
+│   ├── main.py               # rotas, WebSockets, tokens, QR
+│   ├── ponte.py              # roda no notebook da feira, opera a câmera
+│   └── README.md             # montagem e operação na feira
+│
 ├── calibrar.py               # gera calibration.json (interativo, 1x por câmera)
 ├── medir_grama.py            # captura + classificação + envio (cron)
 ├── camera.py                 # detecção de backend/index por plataforma (MSMF/V4L2)
@@ -541,7 +547,7 @@ Decisões que não são óbvias lendo o código — o *porquê* de cada uma:
 
 ### Curto prazo
 
-- [ ] **Keep-alive do Render free** — cron leve batendo `/` a cada 10min para evitar cold start em demo
+- [x] **Keep-alive do Render free** — a ponte do jogo da feira bate em `/saude` a cada 10min
 - [ ] **Segunda estação em campo** — validar `regiao` como discriminante real, não valor único
 - [ ] **Retenção da tabela `leituras`** — política de arquivamento antes de ocupar 0.5 GB do Neon
 
