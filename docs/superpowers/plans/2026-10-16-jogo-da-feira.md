@@ -3925,9 +3925,13 @@ Crie `jogo/static/palco.js`:
   // disser, e isso pode apontar para um endereço interno. Com o texto à
   // vista, o apresentador percebe antes do primeiro grupo escanear.
   el("url-do-jogo").textContent = location.origin + "/";
-  // E o token sai da barra de endereço, para não aparecer quando ele mostra
-  // a tela para alguém.
-  if (token) { history.replaceState(null, "", location.pathname); }
+  // NÃO tire o token da barra de endereço com `history.replaceState`: ele
+  // precisa estar na URL para o `GET /host` passar, e sem ele o F5 leva 403 —
+  // a página nem carrega, e o `sessionStorage` não salva, porque o servidor
+  // recusa antes de qualquer JS rodar. O F5 do palco está na tabela de falhas
+  // do spec como cenário suportado. A exposição do token já está coberta pelo
+  // `Referrer-Policy: no-referrer` da resposta e pelo F11 do roteiro de
+  // montagem, que esconde a barra de endereço.
 
   var CENAS = ["cena-aguardando", "cena-medindo", "cena-revelando", "cena-resultado"];
   function cena(id) {
