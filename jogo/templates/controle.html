@@ -4,6 +4,44 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Grama Webcam</title>
+  <link rel="stylesheet" href="/static/comum.css">
+  <link rel="stylesheet" href="/static/controle.css">
 </head>
-<body><main id="app">carregando…</main></body>
+<body>
+  <main class="tela">
+    <h1 class="marca">Grama Webcam</h1>
+
+    <section id="tela-entrada" class="cartao">
+      <p class="pergunta">Quanto mede essa grama?</p>
+      <label for="nome">Seu nome</label>
+      <input id="nome" type="text" maxlength="20" autocomplete="off" placeholder="Ana">
+      <button id="botao-entrar">Entrar no jogo</button>
+    </section>
+
+    <section id="tela-chute" class="cartao oculto">
+      <p class="ola">Oi, <strong id="meu-nome"></strong>!</p>
+      <label for="chute">Seu chute, em centímetros</label>
+      <input id="chute" type="number" inputmode="decimal" min="0" max="200"
+             step="0.1" placeholder="15,0">
+      <button id="botao-chutar">Mandar chute</button>
+      <p id="confirmacao" class="confirmacao oculto"></p>
+    </section>
+
+    <section id="tela-espera" class="cartao oculto">
+      <p id="texto-espera" class="olhe">Olha pra tela grande!</p>
+    </section>
+
+    <section id="tela-resultado" class="cartao oculto">
+      <p id="posicao" class="posicao"></p>
+      <dl class="placar">
+        <dt>Seu chute</dt><dd id="meu-chute"></dd>
+        <dt>Valor real</dt><dd id="valor-real"></dd>
+        <dt>Você errou por</dt><dd id="meu-erro"></dd>
+      </dl>
+    </section>
+
+    <p id="aviso" class="aviso oculto"></p>
+  </main>
+  <script src="/static/controle.js"></script>
+</body>
 </html>

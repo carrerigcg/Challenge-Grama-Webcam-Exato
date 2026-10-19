@@ -1,0 +1,45 @@
+/* Mesma paleta de scripts/gerar_orcamento_pdf.py, para o jogo não parecer
+   anexo de outro projeto. Branco manda, verde pontua. */
+:root {
+  --verde-escuro: #1B5E20;
+  --verde-medio: #2E7D32;
+  --verde-claro: #E8F5E9;
+  --branco: #FFFFFF;
+  --cinza-texto: #212121;
+  --cinza-sec: #616161;
+  --raio: 12px;
+  --sombra: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  /* Font stack do sistema, sem Google Fonts: um <link> de fonte que não
+     carrega faz o layout virar outro no meio da apresentação. */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--cinza-texto);
+  background: var(--branco);
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border: none;
+  border-radius: var(--raio);
+  background: var(--verde-escuro);
+  color: var(--branco);
+  padding: 16px 24px;
+  font-weight: 600;
+}
+
+button:disabled { background: var(--cinza-sec); cursor: not-allowed; }
+
+.oculto { display: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
