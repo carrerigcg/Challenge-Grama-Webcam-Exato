@@ -3518,6 +3518,12 @@ Crie `jogo/static/controle.js`:
   var meuId = localStorage.getItem(CHAVE_ID);
   var meuNome = localStorage.getItem(CHAVE_NOME);
   var meuChute = localStorage.getItem(CHAVE_CHUTE);
+  // Chute digitado e ainda não confirmado pelo servidor. Não vai pro
+  // localStorage antes da confirmação: o payload esconde o valor do chute de
+  // propósito, então o celular não tem como verificar qual valor o servidor
+  // guardou — e gravar antes mostrava "Chute enviado: 300,0 cm" para um chute
+  // que foi recusado, confirmação falsa na frente do visitante.
+  var chutePendente = null;
   var ws = null;
 
   function conectar() {
@@ -3541,7 +3547,12 @@ Crie `jogo/static/controle.js`:
         avisar("");
         return;
       }
-      if (msg.tipo === "erro") { avisar(msg.mensagem); return; }
+      if (msg.tipo === "erro") {
+        // O servidor recusou: o pendente não vira confirmação.
+        chutePendente = null;
+        avisar(msg.mensagem);
+        return;
+      }
       if (msg.tipo === "estado") { aplicarEstado(msg); }
     };
 
@@ -3575,6 +3586,15 @@ Crie `jogo/static/controle.js`:
 
     if (estado.estado === "AGUARDANDO") {
       mostrar("tela-chute");
+      var eu = null;
+      estado.jogadores.forEach(function (j) {
+        if (j.nome === meuNome) { eu = j; }
+      });
+      if (chutePendente !== null && eu && eu.chutou) {
+        meuChute = chutePendente;
+        chutePendente = null;
+        localStorage.setItem(CHAVE_CHUTE, meuChute);
+      }
       if (meuChute) {
         el("chute").value = meuChute;
         el("confirmacao").textContent =
@@ -3621,8 +3641,7 @@ Crie `jogo/static/controle.js`:
     // Vírgula é o separador que o teclado brasileiro oferece no celular.
     var valor = parseFloat(el("chute").value.replace(",", "."));
     if (isNaN(valor)) { avisar("Digite um número."); return; }
-    meuChute = valor.toFixed(1);
-    localStorage.setItem(CHAVE_CHUTE, meuChute);
+    chutePendente = valor.toFixed(1);
     ws.send(JSON.stringify({ cmd: "chutar", id: meuId, valor_cm: valor }));
   };
 
