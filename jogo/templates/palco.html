@@ -4,6 +4,54 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Grama Webcam — palco</title>
+  <link rel="stylesheet" href="/static/comum.css">
+  <link rel="stylesheet" href="/static/palco.css">
 </head>
-<body><main id="app">carregando…</main></body>
+<body>
+  <header class="barra">
+    <h1 class="marca">Grama Webcam</h1>
+    <p id="semaforo" class="semaforo">○ câmera offline</p>
+  </header>
+
+  <main class="palco">
+    <section id="cena-aguardando" class="cena">
+      <div class="coluna-qr">
+        <img src="/qr.svg" alt="QR code para entrar no jogo" class="qr">
+        <p id="url-do-jogo" class="url-do-jogo"></p>
+        <p class="legenda-qr">escaneia e entra</p>
+      </div>
+      <div class="coluna-jogo">
+        <p class="pergunta">Quanto mede essa grama?</p>
+        <ol id="cadeiras" class="cadeiras"></ol>
+      </div>
+    </section>
+
+    <section id="cena-medindo" class="cena oculto">
+      <p class="medindo">capturando…</p>
+      <div class="pulso"></div>
+    </section>
+
+    <section id="cena-revelando" class="cena oculto">
+      <div class="lamina-caixa"><div id="lamina" class="lamina"></div></div>
+      <p id="contador" class="contador">0,0 cm</p>
+    </section>
+
+    <section id="cena-resultado" class="cena oculto">
+      <p id="valor-final" class="valor-final"></p>
+      <ol id="podio" class="podio"></ol>
+      <img id="imagem-anotada" class="imagem-anotada oculto"
+           alt="Como a câmera viu a grama">
+    </section>
+  </main>
+
+  <footer class="controles">
+    <button id="botao-medir">📷 Medir grama</button>
+    <span id="contagem-chutes" class="contagem"></span>
+    <button id="botao-travar" class="secundario">Travar sala</button>
+    <button id="botao-nova" class="secundario">Nova rodada</button>
+    <span id="aviso-host" class="aviso-host"></span>
+  </footer>
+
+  <script src="/static/palco.js"></script>
+</body>
 </html>

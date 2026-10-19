@@ -1,0 +1,148 @@
+/* Alvo: 1366x768, a tela do notebook comum. */
+body { display: flex; flex-direction: column; min-height: 100vh; }
+
+.barra {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 16px 32px; border-bottom: 1px solid var(--verde-claro);
+}
+
+.marca {
+  font-size: 1.125rem; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--verde-medio); margin: 0;
+}
+
+.semaforo { margin: 0; font-size: 0.9375rem; color: var(--cinza-sec); font-weight: 600; }
+.semaforo.ligado { color: var(--verde-medio); }
+
+.palco {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  padding: 24px 32px;
+}
+
+.cena { width: 100%; max-width: 1100px; }
+
+#cena-aguardando { display: flex; gap: 48px; align-items: center; }
+
+.coluna-qr { text-align: center; flex-shrink: 0; }
+.qr { width: 220px; height: 220px; display: block; }
+.url-do-jogo {
+  margin: 12px 0 0; font-size: 1rem; font-weight: 600;
+  color: var(--verde-escuro); word-break: break-all;
+}
+.legenda-qr { color: var(--cinza-sec); margin: 4px 0 0; font-size: 0.9375rem; }
+
+.coluna-jogo { flex: 1; }
+
+.pergunta {
+  font-size: 2.25rem; font-weight: 800; color: var(--verde-escuro);
+  margin: 0 0 24px;
+}
+
+.cadeiras { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+
+.cadeiras li {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 20px; border-radius: var(--raio);
+  background: var(--branco); border: 2px solid var(--verde-claro);
+  font-size: 1.125rem;
+  /* Cadeira acendendo: é o feedback de que o toque no celular chegou. Sem
+     isso a pessoa duvida e aperta de novo. */
+  transition: background 300ms ease, border-color 300ms ease;
+}
+
+.cadeiras li.ocupada { background: var(--verde-claro); border-color: var(--verde-medio); }
+.cadeiras li.vazia { color: var(--cinza-sec); }
+.cadeiras li .marca-chute { font-weight: 700; color: var(--verde-escuro); }
+
+.medindo {
+  font-size: 2.5rem; font-weight: 800; text-align: center;
+  color: var(--verde-escuro); margin: 0 0 24px;
+}
+
+.pulso {
+  height: 8px; border-radius: 4px; background: var(--verde-claro);
+  overflow: hidden; position: relative; max-width: 480px; margin: 0 auto;
+}
+
+.pulso::after {
+  content: ""; position: absolute; inset: 0; width: 40%;
+  background: var(--verde-medio); border-radius: 4px;
+  animation: desliza 1.1s ease-in-out infinite;
+}
+
+@keyframes desliza {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+#cena-revelando { display: flex; align-items: flex-end; justify-content: center; gap: 64px; }
+
+/* A lâmina crescendo dá escala ao número: "17,5 cm" não significa nada sozinho. */
+.lamina-caixa { height: 320px; width: 80px; display: flex; align-items: flex-end; }
+
+.lamina {
+  width: 100%; height: 0%;
+  background: linear-gradient(to top, var(--verde-escuro), var(--verde-medio));
+  border-radius: 40px 40px 4px 4px;
+}
+
+.contador {
+  font-size: 7rem; font-weight: 800; color: var(--verde-escuro); margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.valor-final {
+  font-size: 3.5rem; font-weight: 800; color: var(--verde-escuro);
+  margin: 0 0 24px; text-align: center;
+}
+
+.podio {
+  list-style: none; margin: 0 auto 24px; padding: 0;
+  display: grid; gap: 12px; max-width: 620px;
+}
+
+.podio li {
+  display: flex; align-items: center; gap: 16px;
+  padding: 16px 24px; border-radius: var(--raio);
+  background: var(--verde-claro); font-size: 1.25rem;
+  opacity: 0; transform: translateY(24px);
+}
+
+.podio li.entrou { animation: sobe 400ms ease-out forwards; }
+@keyframes sobe { to { opacity: 1; transform: translateY(0); } }
+
+.podio li.campeao {
+  background: var(--verde-escuro); color: var(--branco);
+  font-size: 1.75rem; font-weight: 800;
+}
+
+/* Overshoot é o que faz parecer comemoração, e não transição. */
+.podio li.campeao.entrou { animation: comemora 600ms cubic-bezier(.34,1.56,.64,1) forwards; }
+@keyframes comemora {
+  0% { opacity: 0; transform: scale(0.8); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+.podio li .pos { font-weight: 800; min-width: 2.5rem; }
+.podio li .nome { flex: 1; }
+.podio li .erro { color: var(--cinza-sec); font-size: 1rem; }
+.podio li.campeao .erro { color: var(--verde-claro); }
+
+.imagem-anotada {
+  display: block; max-width: 480px; margin: 0 auto;
+  border-radius: var(--raio); box-shadow: var(--sombra);
+}
+
+.controles {
+  display: flex; align-items: center; gap: 16px;
+  padding: 20px 32px; border-top: 1px solid var(--verde-claro);
+}
+
+.controles button { width: auto; }
+.controles .secundario {
+  background: var(--branco); color: var(--verde-escuro);
+  border: 2px solid var(--verde-claro);
+}
+
+.contagem { color: var(--cinza-sec); }
+.aviso-host { margin-left: auto; color: #8D4E00; }
