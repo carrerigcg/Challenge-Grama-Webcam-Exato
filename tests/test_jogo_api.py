@@ -8,6 +8,8 @@ import asyncio
 import faulthandler
 import threading
 
+import os
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -19,6 +21,12 @@ PONTE_TOKEN = "token-de-ponte-de-teste"
 def app(monkeypatch):
     monkeypatch.setenv("HOST_TOKEN", HOST_TOKEN)
     monkeypatch.setenv("PONTE_TOKEN", PONTE_TOKEN)
+    # Sem isto, a suíte GRAVA NO BANCO DE PRODUÇÃO. O `conftest.py` faz
+    # `load_dotenv()`, que carrega o `.env` real, e aí cada teste de medição
+    # dispara um POST de verdade na API. Doze linhas de teste foram para lá
+    # antes de alguém perceber. O `enviar` já volta cedo sem a chave, então
+    # apagá-la é o freio pelo caminho que o código mesmo oferece.
+    monkeypatch.delenv("API_KEY_WRITE", raising=False)
     from jogo.main import app, medidor, sala
 
     # Estado global do processo: zera entre testes para não vazar jogador de um
@@ -760,3 +768,16 @@ def test_medir_funciona_logo_depois_de_reset_no_meio_da_medicao(client):
         for ws in (ws_ana, ws_bruno):
             if ws is not None:
                 ws.__exit__(None, None, None)
+
+
+def test_a_suite_nao_grava_na_api_de_producao(app):
+    """Guarda contra o vazamento mais caro que esta suíte já teve.
+
+    A medição dispara `enviar_em_background`, que lê `API_KEY_WRITE` e
+    `API_URL` do ambiente — e o `conftest.py` carrega o `.env` real. Doze
+    leituras de teste foram gravadas na API de produção antes de alguém olhar.
+    """
+    assert not os.environ.get("API_KEY_WRITE"), (
+        "a fixture deveria ter apagado API_KEY_WRITE: a suíte gravaria "
+        "medições de teste no banco de produção"
+    )

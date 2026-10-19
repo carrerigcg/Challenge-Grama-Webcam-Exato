@@ -53,6 +53,10 @@
     };
     ws.onclose = function () {
       el("aviso-host").textContent = "Conexão caiu. Reconectando…";
+      // Mata os botoes junto com o socket, pelo mesmo motivo de cima.
+      el("botao-medir").disabled = true;
+      el("botao-travar").disabled = true;
+      el("botao-nova").disabled = true;
       setTimeout(conectar, ESPERA_RECONEXAO_MS);
     };
   }
@@ -61,6 +65,13 @@
     el("semaforo").textContent = estado.ponte_conectada
       ? "● câmera conectada" : "○ câmera offline";
     el("semaforo").classList.toggle("ligado", estado.ponte_conectada);
+
+    // Os tres botoes nascem `disabled` no HTML e voltam a morrer no `onclose`.
+    // Botao vivo com socket morto engole o clique: `ws.send` num socket que
+    // ainda esta CONNECTING estoura `InvalidStateError` e o host fica clicando
+    // em MEDIR na frente do grupo sem nada acontecer.
+    el("botao-travar").disabled = false;
+    el("botao-nova").disabled = false;
 
     el("botao-travar").textContent = estado.aberta ? "Travar sala" : "Abrir sala";
     el("contagem-chutes").textContent =

@@ -24,7 +24,11 @@ body { display: flex; flex-direction: column; min-height: 100vh; }
 #cena-aguardando { display: flex; gap: 48px; align-items: center; }
 
 .coluna-qr { text-align: center; flex-shrink: 0; }
-.qr { width: 220px; height: 220px; display: block; }
+/* Cresce com a tela: o telao da feira e lido de 1 a 3 metros, em grupo, e
+   220px fixos num projetor de 1920 davam um QR de 11% da largura. O `clamp`
+   segura o minimo no notebook de teste e o maximo pra nao comer a coluna das
+   cadeiras. `height: auto` porque o SVG e quadrado e se vira sozinho. */
+.qr { width: clamp(220px, 22vw, 420px); height: auto; display: block; }
 .url-do-jogo {
   margin: 12px 0 0; font-size: 1rem; font-weight: 600;
   color: var(--verde-escuro); word-break: break-all;
